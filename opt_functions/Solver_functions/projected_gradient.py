@@ -14,9 +14,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ssim = SSIM()
 
-def tresholding (x_input, lam, tau):
-    T = torch.sign(x_input) * torch.max(torch.abs(x_input)-lam*tau,torch.tensor(0))
-    return T
+
 
 def Bregman_h(x, u, eps = 1e-8):
     log_term = -torch.log(x + eps) + torch.log(u + eps)

@@ -38,14 +38,14 @@ dtype = torch.float32
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tv= TVLoss()
 
-Nz = 1
+Nz = 2
 pxsize = 40
 IS_3D = (Nz > 1)
-IS_REAL = False
+IS_REAL = True
 LOAD_FROM_FILE = True
 path = 'Data/Simul_data/tub_level.pth'
 flux = 30
-lam = 0.01
+lam = 0.001
 
 dataset = prepare_ism_data(
     is_real = IS_REAL,
@@ -62,8 +62,10 @@ dataset = prepare_ism_data(
 
 #%%
 
-ALGORITHM = "md"       # "prox" o "pgd"
+ALGORITHM = "pgd"       # "prox" o "pgd"
 kl = KL(back=dataset["back_vec"])
+tv=TVLoss()
+l1 = l1Loss()
 
 parameters = {
     "max_iter": 10000,
@@ -79,16 +81,13 @@ parameters = {
     "single_data_fid": KL_metric if IS_3D else KL_metric,
     
     
-    # "prior": l1_energy,
+    # "prior": l1.forward_3D if IS_3D else l1.forward,
     "lam": lam,
-    "prior": total_variation_3D if IS_3D else tv.forward,
-    "prox": tresholding,           # Servirà se ALGORITHM="prox"
-    "prior_grad": total_variation_grad_3D if IS_3D else tv.grad          # Servirà se ALGORITHM="pgd"
+    "prior": tv.forward_3D if IS_3D else tv.forward,
+    "prox": tresholding_3D if IS_3D else tresholding,           # Servirà se ALGORITHM="prox"
+    "prior_grad": tv.grad_3D if IS_3D else tv.grad          # Servirà se ALGORITHM="pgd"
 }
 
-# results = ism_solver(dataset["noise_image"], lam, dataset["back_vec"], parameters, 
-#                algorithm="pgd", use_backtracking=True, is_3d=True, is_realdata=True,
-#                s=1.0, eta=2.0)
 
 # Choose betwen Pgd, Pgd_Fast, Pgd_Fast_Backtracking, Pgd_Bakctracking
 SolverClass = Pgd_Backtracking
@@ -97,6 +96,6 @@ solver = SolverClass(parameters, algorithm = ALGORITHM, is_3d=IS_3D, is_realdata
 
 results = solver.solve(y=dataset["noise_image"])
 
-plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz)
+plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec = 100, y0_sec = 100)
 
 

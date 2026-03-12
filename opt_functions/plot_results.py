@@ -85,7 +85,7 @@ def plot_met(
 
 
 
-def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz):
+def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
     
     grid = ism.GridParameters()
 
@@ -152,8 +152,8 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz):
             
             fig, ax = plt.subplots(2,2, sharex = 'row', sharey = 'row', figsize = (10,10))
 
-            x0 = 150
-            y0 = 220
+            x0 = x0_sec
+            y0 = y0_sec
             dx = 180
             dy = 180
             # Create a Rectangle patch
@@ -181,8 +181,8 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz):
 
             fig, ax = plt.subplots(2,2, sharex = 'row', sharey = 'row', figsize = (10,10))
 
-            x0 = 350
-            y0 = 450
+            x0 = x0_sec
+            y0 = y0_sec
             dx = 200
             dy = 200
             # Create a Rectangle patch

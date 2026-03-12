@@ -50,12 +50,14 @@ class TVLoss(nn.Module):
         super().__init__()
         self.tv_loss_weight = tv_loss_weight
         self.eps = eps
+        
     def forward(self, x):
         # differenze orizzontali e verticali
         dx = x[:, :, 1:, :] - x[:, :, :-1, :]
         dy = x[:, :, :, 1:] - x[:, :, :, :-1]
         tv = torch.sqrt(dx[:, :, :, :-1]**2 + dy[:, :, :-1, :]**2 + self.eps)
         return self.tv_loss_weight * tv.sum(dim=(1, 2, 3))
+    
     def grad(self, x):
         """
         Calcola il gradiente tramite autograd senza mantenere il grafo.
@@ -66,41 +68,52 @@ class TVLoss(nn.Module):
             outputs=loss.sum(), inputs=x, retain_graph=False
         )[0]
         return grad
-tv=TVLoss()
+    
+    def forward_3D(self, x):
+
+        x = x[:,1].unsqueeze(1)
+        grad_x, grad_y = grad(x)
+        norm_gradient = grad_x**2 + grad_y**2  # Modulo quadrato del gradiente
+
+        tot_var = torch.sum(torch.sqrt(norm_gradient + self.eps**2 ))
+
+        return tot_var
+    
+    def grad_3D(self, x):
+    
+        x = x[:,1].unsqueeze(1)
+
+        grad_x, grad_y = grad(x)
+        norm_gradient = grad_x**2 + grad_y**2  # Modulo quadrato del gradiente
+
+        denom = torch.sqrt( norm_gradient + self.eps**2)
+
+        new_grad_x = grad_x / denom
+        new_grad_y = grad_y / denom
+        new_grad = - divergen(new_grad_x, new_grad_y)
+        tv_grad =  new_grad
+        
+        return tv_grad
 
 
+def tresholding (x_input, lam, tau):
+    T = torch.sign(x_input) * torch.max(torch.abs(x_input)-lam*tau,torch.tensor(0))
+    return T
+
+def tresholding_3D(x_input, lam, tau):
+    # Creiamo una copia del tensore per non sporcare il dato originale
+    x_prox = x_input.clone()
+    
+    # Applichiamo il thresholding SOLO alla prima colonna (x_1, indice 0)
+    x_prox[:, 0] = tresholding(x_input[:, 0], lam, tau)
+    
+    # La seconda colonna (x_2, indice 1) rimane già uguale grazie al .clone()
+    
+    return x_prox
 
 eps_tv = 1e-6
 
 
-
-def total_variation_3D(image, eps = eps_tv):
-    """
-    Applica la regolarizzazione di total variation
-    """
-    image = image[:,1].unsqueeze(1)
-    grad_x, grad_y = grad(image)
-    norm_gradient = grad_x**2 + grad_y**2  # Modulo quadrato del gradiente
-
-    tot_var = torch.sum(torch.sqrt(norm_gradient + eps**2 ))
-
-    return tot_var
-
-def total_variation_grad_3D(image, eps = eps_tv):
-    
-    image = image[:,1].unsqueeze(1)
-
-    grad_x, grad_y = grad(image)
-    norm_gradient = grad_x**2 + grad_y**2  # Modulo quadrato del gradiente
-
-    denom = torch.sqrt( norm_gradient + eps**2)
-
-    new_grad_x = grad_x / denom
-    new_grad_y = grad_y / denom
-    new_grad = - divergen(new_grad_x, new_grad_y)
-    tv_grad =  new_grad
-    
-    return tv_grad
 
 # Tikhonov reg order 1
 
@@ -135,11 +148,22 @@ def sobolev_grad(image):
     
     return sobolev_grad
 
-def l1_energy(image):
-    """
-    Regolarizzazione L1 lisciata: ∑ sqrt(|grad u|^2 + eps)
-    """
-    return torch.norm(image, p=1)
+class l1Loss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        # differenze orizzontali e verticali
+        return torch.norm(x, p=1)
+    
+    def forward_3D(self, x):
+        x = x[:,1].unsqueeze(1)
+        
+        return torch.norm(x, p=1)
+
+
+
+
 eps_l1=1e-6
 
 def l1_smooth_energy(image):
