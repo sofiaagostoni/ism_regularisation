@@ -53,42 +53,25 @@ class KL(nn.Module):
         
         
     def forward_25_3D(self, y, x, physics):
-        # 1. Forward UNA SOLA VOLTA senza ripetere x
-        clean = physics.A(x) 
+        x = x.repeat(25,1,1,1)
+        clean = physics(x) 
+        z = clean.sum(1).unsqueeze(1) + self.eps.view(25,1,1,1) 
+        I0 = (y == 0)
+        I1 = (y != 0)
+        kl = torch.zeros_like(y)
         
-        # 2. Somma sulla dimensione dei canali (dim=1) tenendo la dimensione
-        # keepdim=True fa esattamente lo stesso lavoro di .unsqueeze(1) ma è più pulito
-        z_clean = clean.sum(dim=1, keepdim=True) 
+        term1 = torch.sum(z[I0] )
+        term2 = torch.sum((y[I1] * torch.log(y[I1] /(z[I1] + 1e-14)) + z[I1] - y[I1]))
         
-        # 3. Il broadcasting si occupa di espandere automaticamente a 25 
-        # sommando il background
-        z = z_clean + self._get_eps()
-        
-        # 4. Trucco anti-NaN per la GPU
-        y_safe = torch.where(y > 0, y, torch.ones_like(y))
-        
-        # 5. Calcolo KL tutto vettorializzato
-        kl = torch.where(y > 0, y * torch.log(y_safe / (z + 1e-14)) + z - y, z)
-        
-        return torch.sum(kl)
+        kl = term1 + term2
+        return kl.unsqueeze(0)
 
     def grad_25_3D(self, y, x, physics):
-        # 1. Forward UNA SOLA VOLTA
-        clean = physics.A(x) 
-        z_clean = clean.sum(dim=1, keepdim=True) 
-        
-        # z prenderà automaticamente la shape [25, 1, H, W]
-        z = z_clean + self._get_eps() 
-        
-        # 2. Calcoliamo il residuo per tutte e 25 le immagini in un colpo solo
-        residual = 1.0 - y / (z + 1e-14)
-        
-        # 3. MAGIA MATEMATICA: Sommiamo i 25 residui PRIMA di fare l'Adjoint!
-        # Questo ci risparmia ben 24 calcoli inutili dell'operatore A_adjoint.
-        residual_sum = torch.sum(residual, dim=0, keepdim=True)
-        
-        # 4. Applichiamo l'Adjoint UNA SOLA VOLTA sulla somma
-        return physics.A_adjoint(residual_sum)
+        x = x.repeat(25,1,1,1)
+        clean = physics(x) 
+        z = clean.sum(1).unsqueeze(1) + self.eps.view(25,1,1,1) 
+        temp1 = physics.A_adjoint(1 - y / z)
+        return torch.sum(temp1,0).unsqueeze(0)
 
     def grad(self, y, x, physics, alpha=1):
         ax = physics.A(x)

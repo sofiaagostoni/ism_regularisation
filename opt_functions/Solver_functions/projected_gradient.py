@@ -58,40 +58,42 @@ class BaseISMSolver:
         self.grad_data_fid = parameters["grad_data_fid"]
         self.prior = parameters["prior"]
 
-    def _get_candidate_and_metrics(self, y_eval, tau, y, lam, precomputed_g_data=None, precomputed_f_y_eval=None):
-            # Se non li passiamo, li calcoliamo (come prima)
-            g_data = self.grad_data_fid(y, y_eval, self.physics) if precomputed_g_data is None else precomputed_g_data
+
+
+    def _get_candidate_and_metrics(self, x_curr, tau, y, lam):
+            # Ricalcoliamo direttamente qui dentro senza flag "precomputed"
+            g_data = self.grad_data_fid(y, x_curr, self.physics)
             
             if self.algorithm == "pgd":
-                g_prior = lam * self.params["prior_grad"](y_eval)
+                g_prior = lam * self.params["prior_grad"](x_curr)
                 g_tot = g_data + g_prior
-                x_next = torch.clamp(y_eval - tau * g_tot, min=0.0)
                 
-                f_y_eval = (self.data_fid(y, y_eval, self.physics) + lam * self.prior(y_eval)) if precomputed_f_y_eval is None else precomputed_f_y_eval
+                x_next = torch.clamp(x_curr - tau * g_tot, min=0.0)
+                
+                # Loss totale
+                f_y_eval = self.data_fid(y, x_curr, self.physics) + lam * self.prior(x_curr)
                 f_x_next = self.data_fid(y, x_next, self.physics) + lam * self.prior(x_next)
-
                 g_for_dot = g_tot
                 
             elif self.algorithm == "prox":
-                x_next = torch.clamp(self.params["prox"](y_eval - tau * g_data, lam, tau), min=0.0)
+                x_next = torch.clamp(self.params["prox"](x_curr - tau * g_data, lam, tau), min=0.0)
                 
-                f_y_eval = self.data_fid(y, y_eval, self.physics) if precomputed_f_y_eval is None else precomputed_f_y_eval
+                # Per i metodi prossimali il line search si fa SOLO sulla parte liscia
+                f_y_eval = self.data_fid(y, x_curr, self.physics)
                 f_x_next = self.data_fid(y, x_next, self.physics)
                 g_for_dot = g_data
                 
-                
             elif self.algorithm == "md":
-                
-                g_prior = lam * self.params["prior_grad"](y_eval)
+                g_prior = lam * self.params["prior_grad"](x_curr)
                 g_tot = g_data + g_prior
-                x_next = y_eval / (1 + tau * y_eval * g_tot)
                 
-                f_y_eval = (self.data_fid(y, y_eval, self.physics) + lam * self.prior(y_eval)) if precomputed_f_y_eval is None else precomputed_f_y_eval
+                x_next = x_curr / (1 + tau * x_curr * g_tot)
+                
+                # Loss totale
+                f_y_eval = self.data_fid(y, x_curr, self.physics) + lam * self.prior(x_curr)
                 f_x_next = self.data_fid(y, x_next, self.physics) + lam * self.prior(x_next)
-
                 g_for_dot = g_tot
                 
-            
             else:
                 raise ValueError(f"Algoritmo {self.algorithm} non supportato.")
             
@@ -184,39 +186,28 @@ class Pgd_Backtracking(BaseISMSolver):
         x_curr = state['x_curr']
         tau_k = state['tau_k'] # Recuperiamo il passo precedente!
         
-        # Rendiamo L_candidate adattivo (esattamente come nel Fast)
         tau_candidate = min(tau_k / self.delta, 1.0 / self.s)
         L_candidate = 1.0 / tau_candidate
-        
-        # PRE-CALCOLIAMO GRADIENTE E LOSS DI x_curr FUORI DAL CICLO!
-        pre_g_data = self.grad_data_fid(y, x_curr, self.physics)
-        if self.algorithm == "pgd":
-            pre_f_y_eval = self.data_fid(y, x_curr, self.physics) + self.lam * self.prior(x_curr)
-        else:
-            pre_f_y_eval = self.data_fid(y, x_curr, self.physics)
 
         loop_count = 0
         while True:
             tau = 1.0 / L_candidate
             
             x_next, g_for_dot, f_y_eval, f_x_next = self._get_candidate_and_metrics(
-                x_curr, tau, y, self.lam, precomputed_g_data=pre_g_data, precomputed_f_y_eval=pre_f_y_eval
+                x_curr, tau, y, self.lam
             )
             
             diff_x = x_next - x_curr
             grad_dot = torch.sum(g_for_dot * diff_x)
-            
             sqnorm = torch.sum(diff_x ** 2)
             
-            if self.algorithm == "pgd":
-                
-                dist  = grad_dot + (L_candidate / 2.0) * sqnorm
+            if self.algorithm == "pgd" or self.algorithm == "prox":
+                dist = (L_candidate / 2.0) * sqnorm
                 
             elif self.algorithm == "md":
-            
-                dist = - (0.8/tau)*Bregman_h(x_next, x_curr)
+                dist = - (0.8 / tau) * Bregman_h(x_next, x_curr)
         
-            
+            # CONDIZIONE DI BACKTRACKING CORRETTA
             if f_x_next <= f_y_eval + grad_dot + dist:
                 break
                 
@@ -226,14 +217,14 @@ class Pgd_Backtracking(BaseISMSolver):
                 L_candidate = self.L_max
                 tau = 1.0 / L_candidate
                 x_next, _, _, f_x_next = self._get_candidate_and_metrics(
-                    x_curr, tau, y, self.lam, precomputed_g_data=pre_g_data, precomputed_f_y_eval=pre_f_y_eval
+                    x_curr, tau, y, self.lam
                 )
                 break
                 
         state['x_prev'] = x_curr
         state['x_curr'] = x_next
-        state['tau_k'] = tau          # SALVIAMO IL NUOVO PASSO per la prossima iterazione!
-        state['f_x_next'] = f_x_next  # Salviamo la loss!
+        state['tau_k'] = tau          # SALVIAMO IL NUOVO PASSO per la prossima iterazione
+        state['f_x_next'] = f_x_next  # Salviamo la loss
         return state
 
 

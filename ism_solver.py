@@ -67,7 +67,7 @@ kl = KL(back=dataset["back_vec"])
 
 parameters = {
     "max_iter": 10000,
-    "tollerance": 1e-12,
+    "tollerance": 1e-8,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
