@@ -145,7 +145,7 @@ class BaseISMSolver:
 
             # --- CONVERGENZA ---
             if iter_err[k] < self.tollerance:
-                print(f"Convergence reached at iter = {k}, lambda = {self.lam}")
+                print(f"Convergence reached at iter = {k}")
                 funct, iter_err = funct[:k], iter_err[:k]
                 if not self.is_realdata:
                     diff_fid, psnr_vec, ssim_vec = diff_fid[:k], psnr_vec[:k], ssim_vec[:k]

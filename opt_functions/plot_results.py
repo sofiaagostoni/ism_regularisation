@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import math
+import torch
 import ISM.simulation.PSF_sim as ism
 import ISM.analysis.Graph_lib as gr
 from deepinv.loss.metric import SSIM, MSE, PSNR, LPIPS
@@ -85,7 +86,9 @@ def plot_met(
 
 
 
-def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
+def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
+    
+    Nz = 2 if IS_3D else 1
     
     grid = ism.GridParameters()
 
@@ -146,6 +149,9 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
             print(f"MICROSSIM {micro_structural_similarity(ground_truth.squeeze().detach().cpu().numpy().astype(np.float32), x_result.squeeze().detach().cpu().numpy().astype(np.float32))}")
             
     if IS_REAL and IS_3D:
+        
+            plot_met(funct.cpu(), funct_metric, iter_err.cpu())
+
             
             meta = dataset['meta']
             clabel = meta.pxdwelltime
@@ -159,12 +165,12 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
             # Create a Rectangle patch
             rect = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
 
-            gr.ShowImg(x_result[:,1:2,10:-10, 10:-10], meta.dx, clabel, fig = fig, ax = ax[0,1])
+            gr.ShowImg(x_result[:,1:2,:, :], meta.dx, clabel, fig = fig, ax = ax[0,1])
             gr.ShowImg(x_result[:,1:2,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig = fig, ax = ax[1,1])
             ax[0,1].add_patch(rect)
             ax[0,1].set_title("Reconstruction")
 
-            gr.ShowImg(noise_image[12:13,:,10:-10, 10:-10], meta.dx, clabel, fig = fig, ax = ax[0,0])
+            gr.ShowImg(noise_image[12:13,:,:, :], meta.dx, clabel, fig = fig, ax = ax[0,0])
             gr.ShowImg(noise_image[12:13,:,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig = fig, ax = ax[1,0])
             ax[0,0].set_title("Noise image center")
             gr.ShowImg(noise_image.sum(0), meta.dx, clabel, fig = fig, ax = ax[0,0])
@@ -175,6 +181,8 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
             fig.tight_layout()
             
     elif IS_REAL and not IS_3D:
+        
+            plot_met(funct.cpu(), funct_metric, iter_err.cpu())
             
             meta = dataset['meta']
             clabel = meta.pxdwelltime
@@ -188,13 +196,13 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
             # Create a Rectangle patch
             rect = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
 
-            gr.ShowImg(x_result[:,:,10:-10, 10:-10], meta.dx, clabel, fig = fig, ax = ax[0,1])
+            gr.ShowImg(x_result[:,:,:, :], meta.dx, clabel, fig = fig, ax = ax[0,1])
             gr.ShowImg(x_result[:,:,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig = fig, ax = ax[1,1])
             ax[0,1].add_patch(rect)
             ax[0,1].set_title("Reconstruction")
 
 
-            gr.ShowImg(noise_image[12:13,:,10:-10, 10:-10], meta.dx, clabel, fig = fig, ax = ax[0,0])
+            gr.ShowImg(noise_image[12:13,:,:, :], meta.dx, clabel, fig = fig, ax = ax[0,0])
             gr.ShowImg(noise_image[12:13,:,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig = fig, ax = ax[1,0])
             ax[0,0].set_title("Noise image center")
             gr.ShowImg(noise_image.sum(0), meta.dx, clabel, fig = fig, ax = ax[0,0])
@@ -208,7 +216,7 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec, y0_sec):
             
 
 
-def plot_wp_results(mu_values_grid, dataset, W_sum, psnr_vecs=None, ssim_vecs=None, is_real=False, title="Metrica", layout="twin"):
+def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_3d = True, title="Metrica", layout="twin"):
     """
     Plotta i risultati dell'ottimizzazione del parametro mu.
     
@@ -221,6 +229,11 @@ def plot_wp_results(mu_values_grid, dataset, W_sum, psnr_vecs=None, ssim_vecs=No
     - title: stringa per il titolo del grafico (es. "TV", "SOB")
     - layout: "twin" (grafico singolo con doppio asse Y) o "stacked" (3 subplot separati)
     """
+    
+    W_sum = results["W_sum"]
+    psnr_vecs = results["psnr_vecs"]  
+    ssim_vecs = results["ssim_vecs"]
+    x_best = results["x_result"]
     
     # Portiamo tutto su CPU per matplotlib
     mu_vals = mu_values_grid.detach().cpu()
@@ -262,30 +275,7 @@ def plot_wp_results(mu_values_grid, dataset, W_sum, psnr_vecs=None, ssim_vecs=No
         x_best = x_best.cpu()
         clabel = meta.pxdwelltime
 
-        fig, ax = plt.subplots(2,2, sharex = 'row', sharey = 'row', figsize = (10,10))
-
-        x0 = 350
-        y0 = 450
-        dx = 200
-        dy = 200
-        # Create a Rectangle patch
-        rect = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
-
-        gr.ShowImg(x_best[:,1:2,:, :], clabel, fig = fig, ax = ax[0,1])
-        gr.ShowImg(x_best[:,1:2,x0:x0+dx, y0:y0+dx], clabel, fig = fig, ax = ax[1,1])
-        ax[0,1].add_patch(rect)
-        ax[0,1].set_title("Reconstruction")
-
-
-        gr.ShowImg(noise_image[12:13,:,:, :], clabel, fig = fig, ax = ax[0,0])
-        gr.ShowImg(noise_image[12:13,:,x0:x0+dx, y0:y0+dx], clabel, fig = fig, ax = ax[1,0])
-        ax[0,0].set_title("Noise image center")
-        gr.ShowImg(noise_image.sum(0), clabel, fig = fig, ax = ax[0,0])
-        gr.ShowImg(noise_image[:,:,x0:x0+dx, y0:y0+dx].sum(0), clabel, fig = fig, ax = ax[1,0])
-        ax[0,0].set_title("Noise image center")
-        # ax[1,0].add_patch(rect)
-
-        fig.tight_layout()
+        
     else:
         # Caso dati simulati: abbiamo PSNR e SSIM
         psnr = psnr_vecs.detach().cpu()
@@ -355,3 +345,5 @@ def plot_wp_results(mu_values_grid, dataset, W_sum, psnr_vecs=None, ssim_vecs=No
             plt.suptitle(title)
             plt.tight_layout()
             plt.show()
+                       
+    plot_results(results, dataset, is_real, is_3d, pxsize, x0_sec = 100, y0_sec = 100)

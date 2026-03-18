@@ -219,8 +219,8 @@ def RWP(mu_values_grid, noise_image, back_vec, parameters, optim = Pgd_Backtrack
         print(f"\n--- Testing mu parameter = {mu} ---")
         
         parameters['lam'] = mu
-        
-        # Esecuzione del solver elegantissima: tutto è già configurato dentro l'oggetto!
+        solver = SolverClass(parameters, algorithm = algorithm, is_3d=is_3d, is_realdata = is_realdata)
+
         results = solver.solve(y=noise_image)
         x_result = results['x_result']
       
@@ -236,6 +236,8 @@ def RWP(mu_values_grid, noise_image, back_vec, parameters, optim = Pgd_Backtrack
             Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps)
         elif mask_type == "whole":
             Z = standardize(noise_image, lambda_d)
+        else:
+            raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
             
         # Metriche Whiteness
         wh = whiteness_measure(Z)

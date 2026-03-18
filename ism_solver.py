@@ -38,64 +38,90 @@ dtype = torch.float32
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tv= TVLoss()
 
-Nz = 2
-pxsize = 40
-IS_3D = (Nz > 1)
-IS_REAL = True
-LOAD_FROM_FILE = True
-path = 'Data/Simul_data/tub_level.pth'
-flux = 30
-lam = 0.001
+
+hparams = {
+    'Nz': 2,
+    'pxsize': 40,
+    'IS_REAL': True,
+    'LOAD_FROM_FILE': True,
+    'flux': 30,
+    'lam': 0.1
+}
+
+# Aggiunta dei parametri dipendenti
+hparams['IS_3D'] = (hparams['Nz'] > 1)
+hparams['real_name'] = '05_convallaria' if hparams['IS_REAL'] else 'tubulin'
+hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
+
 
 dataset = prepare_ism_data(
-    is_real = IS_REAL,
-    real_name='05_convallaria',
-    load_path = None if not LOAD_FROM_FILE else path,
-    phantom_type='tubulin',
+    is_real = hparams['IS_REAL'],
+    real_name= hparams['real_name'],
+    load_path = None if not hparams['LOAD_FROM_FILE'] else hparams['path'],
+    phantom_type= hparams['real_name'],
     Nx = 256, Ny = 256, 
-    Nz = Nz , 
-    pxsize = pxsize, 
-    flux = flux,
+    Nz = hparams['Nz'] , 
+    pxsize = hparams['pxsize'], 
+    flux = hparams['flux'],
     device = device,
     show_plots = True
 )
 
 #%%
 
-ALGORITHM = "pgd"       # "prox" o "pgd"
+ALGORITHM = "prox"       # "prox" o "pgd"
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
 l1 = l1Loss()
 
 parameters = {
     "max_iter": 10000,
-    "tollerance": 1e-8,
+    "tollerance": 1e-10,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
     "ground_truth": dataset["ground_truth"],
     "back": dataset["back_vec"],
     
-    "data_fid": kl.forward_25_3D if IS_3D else kl.forward_25,
-    "grad_data_fid": kl.grad_25_3D if IS_3D else kl.grad_25,
-    "single_data_fid": KL_metric if IS_3D else KL_metric,
+    "data_fid": kl.forward_25_3D if hparams['IS_3D'] else kl.forward_25,
+    "grad_data_fid": kl.grad_25_3D if hparams['IS_3D'] else kl.grad_25,
+    "single_data_fid": KL_metric if hparams['IS_3D'] else KL_metric,
     
     
     # "prior": l1.forward_3D if IS_3D else l1.forward,
-    "lam": lam,
-    "prior": tv.forward_3D if IS_3D else tv.forward,
-    "prox": tresholding_3D if IS_3D else tresholding,           # Servirà se ALGORITHM="prox"
-    "prior_grad": tv.grad_3D if IS_3D else tv.grad          # Servirà se ALGORITHM="pgd"
+    "lam": hparams['lam'],
+    "prior": tv.forward_3D if hparams['IS_3D'] else tv.forward,
+    "prox": tresholding_3D if hparams['IS_3D'] else tresholding,           # Servirà se ALGORITHM="prox"
+    "prior_grad": tv.grad_3D if hparams['IS_3D'] else tv.grad          # Servirà se ALGORITHM="pgd"
 }
 
 
 # Choose betwen Pgd, Pgd_Fast, Pgd_Fast_Backtracking, Pgd_Bakctracking
 SolverClass = Pgd_Backtracking
 
-solver = SolverClass(parameters, algorithm = ALGORITHM, is_3d=IS_3D, is_realdata = IS_REAL)
+solver = SolverClass(parameters, algorithm = ALGORITHM, is_3d=hparams['IS_3D'], is_realdata = hparams['IS_REAL'])
 
 results = solver.solve(y=dataset["noise_image"])
 
-plot_results(results, dataset, IS_REAL, IS_3D, pxsize, Nz, x0_sec = 100, y0_sec = 100)
+real_tag = "real" if hparams['IS_REAL'] else "sim"
+sect_tag = "3D" if hparams['IS_3D'] else "2D"
+
+save_path = f"Results/ism_results/ism_{sect_tag}_{real_tag}_{ALGORITHM}_{hparams['real_name']}_lam{parameters['lam']}.pth"
+
+clean_dataset = {
+    "noise_image": dataset["noise_image"].cpu() if isinstance(dataset["noise_image"], torch.Tensor) else dataset["noise_image"],
+    "ground_truth": dataset["ground_truth"].cpu() if isinstance(dataset["ground_truth"], torch.Tensor) else dataset["ground_truth"],
+    "clean_image":dataset["clean_image"].cpu() if isinstance(dataset["clean_image"], torch.Tensor) else dataset["clean_image"],
+    'meta': dataset["meta"].cpu() if isinstance(dataset["meta"], torch.Tensor) else dataset["meta"],
+    # Estrai solo ciò che serve per la visualizzazione o l'analisi futura.
+    # Evita di inserire dataset["physics"] o funzioni!
+}
+
+torch.save({
+    'hparams': hparams,
+    'results': results,
+    'dataset': clean_dataset
+}, save_path)
+
 
 
