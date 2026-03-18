@@ -47,12 +47,12 @@ hparams = {
     'IS_REAL': True,
     'LOAD_FROM_FILE': True,
     'flux': 30,
-    'lam': 0.01
+    'lam': 0.001
 }
 
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
-hparams['real_name'] = '03_tomm20' if hparams['IS_REAL'] else 'tubulin'
+hparams['real_name'] = '04_tomm20' if hparams['IS_REAL'] else 'tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -71,7 +71,7 @@ dataset = prepare_ism_data(
 
 #%%
 
-ALGORITHM = "prox"       # "prox" o "pgd"
+ALGORITHM = "md"       # "prox" o "pgd"
 
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
@@ -88,6 +88,11 @@ CONFIG_REG = {
         "prior": (l1.forward_3D, l1.forward),
         "prior_grad": (None, None),
         "prox": (tresholding_3D, tresholding)
+    },
+    "md": {
+        "prior": (tv.forward_3D, tv.forward),
+        "prior_grad": (tv.grad_3D, tv.grad),
+        "prox": (None, None)
     }
 }
 
@@ -97,7 +102,7 @@ cfg = CONFIG_REG[ALGORITHM]
     
     
 parameters = {
-    "max_iter": 10000,
+    "max_iter": 100000,
     "tollerance": 1e-12,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
