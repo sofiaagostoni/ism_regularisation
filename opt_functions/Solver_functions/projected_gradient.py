@@ -105,7 +105,8 @@ class BaseISMSolver:
         state = {
             'x_curr': self.params["x_init"].clone(),
             'x_prev': self.params["x_init"].clone(),
-            'tau_k': 1.0 / self.L_max,
+            'tau_k': 1e-3,
+            # 'tau_k': 1.0 / self.L_max,
             't_k': 1.0
         }
         

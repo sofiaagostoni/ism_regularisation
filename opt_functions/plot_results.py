@@ -62,7 +62,6 @@ def plot_met(
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(10 * n_cols, 5 * n_rows))
 
-    # 🔑 FIX IMPORTANTE
     axes = np.atleast_1d(axes).flatten()
 
     for ax, (data, title, ylabel, scale) in zip(axes, plots):
@@ -233,8 +232,8 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
     W_sum = results["W_sum"]
     psnr_vecs = results["psnr_vecs"]  
     ssim_vecs = results["ssim_vecs"]
-    x_best = results["x_result"]
-    
+    results_best = results["results_best"]
+    x_best = results_best["x_result"]
     # Portiamo tutto su CPU per matplotlib
     mu_vals = mu_values_grid.detach().cpu()
     W = torch.abs(W_sum).detach().cpu()
@@ -346,4 +345,4 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
             plt.tight_layout()
             plt.show()
                        
-    plot_results(results, dataset, is_real, is_3d, pxsize, x0_sec = 100, y0_sec = 100)
+    plot_results(results_best, dataset, is_real, is_3d, pxsize, x0_sec = 100, y0_sec = 100)

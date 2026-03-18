@@ -12,6 +12,8 @@ from deepinv.loss.metric import SSIM, MSE, PSNR, LPIPS
 from opt_functions.Data_manager.generate_measurments import *
 from opt_functions.plot_results import *
 from opt_functions.Solver_functions import *
+from opt_functions.Data_manager.real_data_load import *
+
 
 from microssim import MicroSSIM, micro_structural_similarity
 from skimage.metrics import structural_similarity
@@ -21,16 +23,16 @@ import ISM.analysis.Graph_lib as gr
 from scipy.optimize import least_squares
 
 
-# path = r'Data_results/Real_data'       #es: \\iitfsvge101.iit.local\mms\Data MMS server\STED-ISM\AxialDeconvolution\Convallaria\C
+# path = r'Data/Real_data'       #es: \\iitfsvge101.iit.local\mms\Data MMS server\STED-ISM\AxialDeconvolution\Convallaria\C
 
-# file = r'05_Convallaria-03-03-2026-17-42-30.h5'
+# file = r'01_TOMM20_AF488-17-03-2026-17-34-10.h5'
 
 # Nz = 2
 
-# name = "05_convallaria"
+# name = "01_tomm20"
 
-# exwl = 488
-# emwl = 510
+# exwl = 493
+# emwl = 518
 
 # save_fromh5_totorch(path, file, Nz, name, exwl, emwl) 
 #%%
@@ -45,12 +47,12 @@ hparams = {
     'IS_REAL': True,
     'LOAD_FROM_FILE': True,
     'flux': 30,
-    'lam': 0.1
+    'lam': 0.01
 }
 
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
-hparams['real_name'] = '05_convallaria' if hparams['IS_REAL'] else 'tubulin'
+hparams['real_name'] = '03_tomm20' if hparams['IS_REAL'] else 'tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -70,29 +72,47 @@ dataset = prepare_ism_data(
 #%%
 
 ALGORITHM = "prox"       # "prox" o "pgd"
+
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
 l1 = l1Loss()
 
+# Definiamo le logiche per ogni algoritmo
+CONFIG_REG = {
+    "pgd": {
+        "prior": (tv.forward_3D, tv.forward),
+        "prior_grad": (tv.grad_3D, tv.grad),
+        "prox": (None, None) # PGD non usa prox solitamente
+    },
+    "prox": {
+        "prior": (l1.forward_3D, l1.forward),
+        "prior_grad": (None, None),
+        "prox": (tresholding_3D, tresholding)
+    }
+}
+
+# Estraiamo le funzioni in base a IS_3D (0 per 3D, 1 per 2D)
+idx = 0 if hparams['IS_3D'] else 1
+cfg = CONFIG_REG[ALGORITHM]
+    
+    
 parameters = {
     "max_iter": 10000,
-    "tollerance": 1e-10,
+    "tollerance": 1e-12,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
     "ground_truth": dataset["ground_truth"],
     "back": dataset["back_vec"],
+    "lam": hparams['lam'],
     
     "data_fid": kl.forward_25_3D if hparams['IS_3D'] else kl.forward_25,
     "grad_data_fid": kl.grad_25_3D if hparams['IS_3D'] else kl.grad_25,
     "single_data_fid": KL_metric if hparams['IS_3D'] else KL_metric,
     
-    
-    # "prior": l1.forward_3D if IS_3D else l1.forward,
-    "lam": hparams['lam'],
-    "prior": tv.forward_3D if hparams['IS_3D'] else tv.forward,
-    "prox": tresholding_3D if hparams['IS_3D'] else tresholding,           # Servirà se ALGORITHM="prox"
-    "prior_grad": tv.grad_3D if hparams['IS_3D'] else tv.grad          # Servirà se ALGORITHM="pgd"
+    "prior": cfg["prior"][idx],
+    "prox": cfg["prox"][idx],
+    "prior_grad": cfg["prior_grad"][idx]
 }
 
 
@@ -113,8 +133,6 @@ clean_dataset = {
     "ground_truth": dataset["ground_truth"].cpu() if isinstance(dataset["ground_truth"], torch.Tensor) else dataset["ground_truth"],
     "clean_image":dataset["clean_image"].cpu() if isinstance(dataset["clean_image"], torch.Tensor) else dataset["clean_image"],
     'meta': dataset["meta"].cpu() if isinstance(dataset["meta"], torch.Tensor) else dataset["meta"],
-    # Estrai solo ciò che serve per la visualizzazione o l'analisi futura.
-    # Evita di inserire dataset["physics"] o funzioni!
 }
 
 torch.save({

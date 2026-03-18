@@ -41,7 +41,7 @@ def save_fromh5_totorch(path, file, Nz, name, exwl, emwl):
         "emwl": emwl
         }
 
-        torch.save(data, f'Data_results/Real_data/{name}_data.pth')
+        torch.save(data, f'Data/Real_data/{name}_data.pth')
 
 def load_real_data(path, file, Nz):
 
@@ -80,7 +80,7 @@ def load_real_data(path, file, Nz):
 
     grid.Nz = Nz
 
-    PSF, detPSF, exPSF = est.psf_estimator_from_data(dset, exPar, emPar, grid, z_out_of_focus = 700)
+    PSF, detPSF, exPSF = est.psf_estimator_from_data(dset, exPar, emPar, grid, z_out_of_focus = "ToFind", check_alignment = True)
     spad_size = grid.spad_size() / emPar.airy_unit
 
     PSF = torch.from_numpy(PSF).float().to(device)

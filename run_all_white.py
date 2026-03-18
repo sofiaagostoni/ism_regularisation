@@ -1,0 +1,186 @@
+#%%
+import os
+import gc
+import itertools
+from tqdm.auto import tqdm
+import torch
+import torch.nn.functional as F
+import numpy as np
+import matplotlib.pyplot as plt
+
+# I tuoi import
+from opt_functions import *
+from deepinv.physics import Denoising, GaussianNoise, PoissonNoise
+from deepinv.utils.demo import load_url_image, get_image_url
+from deepinv.utils.plotting import plot
+from microssim import MicroSSIM, micro_structural_similarity
+from skimage.metrics import structural_similarity
+from deepinv.loss.metric import SSIM, MSE, PSNR, LPIPS
+
+import ISM.simulation.PSF_sim as ism
+import ISM.analysis.Graph_lib as gr
+from opt_functions.Data_manager.generate_measurments import *
+
+# Setup globale
+dtype = torch.float32
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+mu_values_grid = torch.concat(
+    [torch.tensor([0, 1e-8]), torch.linspace(1e-5, 1e-1, steps=100)],
+    dim=0
+).to(device)
+
+
+def run_experiment(real_name, nz, algorithm):
+    """
+    Esegue un singolo esperimento e salva i risultati.
+    """
+    print(f"\n--- Avvio exp: Dataset={real_name} | Nz={nz} | Algo={algorithm} ---")
+    
+    ## HYPER PARAM SETTING
+    hparams = {
+        'Nz': nz,
+        'pxsize': 40,
+        'IS_REAL': True,
+        'LOAD_FROM_FILE': True,
+        'flux': 30,
+        'lam': 0.1,
+        'mu_grid': mu_values_grid,
+        'real_name': real_name
+    }
+
+    hparams['IS_3D'] = (hparams['Nz'] > 1)
+    opt_sec = '3D' if hparams['IS_3D'] else '2D'
+    
+    # NOTA: Controlla che questa logica del path vada bene per tutti i tuoi 8 dataset
+    hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
+
+    ## DATA LOAD
+    dataset = prepare_ism_data(
+        is_real = hparams['IS_REAL'],
+        real_name= hparams['real_name'],
+        load_path = None if not hparams['LOAD_FROM_FILE'] else hparams['path'],
+        phantom_type= hparams['real_name'],
+        Nx = 256, Ny = 256, 
+        Nz = hparams['Nz'] , 
+        pxsize = hparams['pxsize'], 
+        flux = hparams['flux'],
+        device = device,
+        show_plots = False # IMPORTANTE: impostato a False per i run notturni
+    )
+
+    ## ALGORITHM E LOSSES
+    MASK = 'masked'
+    
+    kl = KL(back=dataset["back_vec"])
+    tv = TVLoss()
+    l1 = l1Loss()
+
+    CONFIG_REG = {
+        "pgd": {
+            "prior": (tv.forward_3D, tv.forward),
+            "prior_grad": (tv.grad_3D, tv.grad),
+            "prox": (None, None) 
+        },
+        "prox": {
+            "prior": (l1.forward_3D, l1.forward),
+            "prior_grad": (None, None),
+            "prox": (tresholding_3D, tresholding)
+        }
+    }
+
+    idx = 0 if hparams['IS_3D'] else 1
+    cfg = CONFIG_REG[algorithm]
+        
+    parameters = {
+        "max_iter": 10000,
+        "tollerance": 1e-10,
+        "Lip_reg": dataset["L_th"], 
+        "x_init": dataset["x_init"],
+        "physics": dataset["physics"],
+        "ground_truth": dataset["ground_truth"],
+        "back": dataset["back_vec"],
+        "lam": hparams['lam'],
+        
+        "data_fid": kl.forward_25_3D if hparams['IS_3D'] else kl.forward_25,
+        "grad_data_fid": kl.grad_25_3D if hparams['IS_3D'] else kl.grad_25,
+        "single_data_fid": KL_metric,
+        
+        "prior": cfg["prior"][idx],
+        "prox": cfg["prox"][idx],
+        "prior_grad": cfg["prior_grad"][idx]
+    }
+
+    # RUN OTTIMIZZAZIONE
+    W_sum, psnr_vecs, ssim_vecs, results_best, wh_true = RWP(
+        dataset, parameters, hparams, 
+        optim=Pgd_Backtracking, 
+        algorithm=algorithm, 
+        mask_type=MASK, 
+        eps=1
+    )
+
+    results = { "W_sum": W_sum,
+                "psnr_vecs": psnr_vecs,
+                "ssim_vecs": ssim_vecs,
+                "results_best": results_best,
+                "wh_true": wh_true,
+                "ground_truth": dataset["ground_truth"]}
+
+    ## SAVE RESULTS
+    # Creazione della cartella se non esiste
+    os.makedirs("Results/WP", exist_ok=True)
+    
+    save_path = f"Results/WP/wp_{opt_sec}_{algorithm}_{MASK}_{hparams['real_name']}.pth"
+
+    clean_dataset = {
+        "noise_image": dataset["noise_image"].cpu() if isinstance(dataset["noise_image"], torch.Tensor) else dataset["noise_image"],
+        "ground_truth": dataset["ground_truth"].cpu() if isinstance(dataset["ground_truth"], torch.Tensor) else dataset["ground_truth"],
+        "clean_image":dataset["clean_image"].cpu() if isinstance(dataset["clean_image"], torch.Tensor) else dataset["clean_image"],
+        'meta': dataset["meta"].cpu() if isinstance(dataset["meta"], torch.Tensor) else dataset["meta"],
+    }
+
+    torch.save({
+        'hparams': hparams,
+        'results': results,
+        'dataset': clean_dataset
+    }, save_path)
+    
+    print(f"Salvato con successo in: {save_path}")
+
+# ==========================================
+# CONFIGURAZIONE DEL GRID SEARCH NOTTURNO
+# ==========================================
+
+if __name__ == "__main__":
+    # INSERISCI QUI I TUOI 8 NOMI
+    datasets_list = [
+        '01_tomm20', '02_tomm20', '03_tomm20', '04_tomm20',
+        '05_convallaria', '06_convallaria', '07_tubulin', '08_tubulin'
+    ] 
+    
+    nz_list = [1, 2]
+    algorithms_list = ["prox", "pgd"]
+
+    # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
+    experiments = list(itertools.product(datasets_list, nz_list, algorithms_list))
+
+    print(f"Inizio sessione: trovati {len(experiments)} esperimenti da lanciare.")
+
+    # Ciclo su tutte le combinazioni con barra di progresso
+    for real_name, nz, algo in tqdm(experiments, desc="Progresso Globale"):
+        try:
+            run_experiment(real_name, nz, algo)
+        except Exception as e:
+            # Se un esperimento fallisce, stampa l'errore ma continua col prossimo
+            print(f"\n[ERRORE] L'esperimento con {real_name}, Nz={nz}, algo={algo} è fallito!")
+            print(f"Dettaglio errore: {e}")
+        
+        finally:
+            # Svuota la cache di PyTorch e forza il Garbage Collector 
+            # FONDAMENTALE per non saturare la RAM/VRAM nei cicli lunghi
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            
+    print("\nTutti gli esperimenti sono terminati!")

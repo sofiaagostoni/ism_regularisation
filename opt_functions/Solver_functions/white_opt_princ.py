@@ -167,15 +167,22 @@ def whiteness_measure(Z: torch.Tensor) -> torch.Tensor:
     return numerator / denominator
 
 
-def RWP(mu_values_grid, noise_image, back_vec, parameters, optim = Pgd_Backtracking,
-        algorithm="pgd", is_3d=False, is_realdata=False,
-        mask_type="masked", eps=1):
+def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
+        algorithm="pgd", mask_type="masked", eps=1):
     """
     Calcola il Residual Whiteness Principle (RWP) per una griglia di parametri mu (lambda).
     Sfrutta le classi OOP (PGDSolver, ProxSolver) per massima efficienza e pulizia.
     """
     # 1. RECUPERA IL DEVICE DAI DATI IN INGRESSO
-    device = noise_image.device 
+    
+    noise_image = dataset["noise_image"]
+    back_vec = dataset["back_vec"]
+    
+    mu_values_grid = hparams["mu_grid"]
+    is_3d = hparams['IS_3D']
+    is_realdata= hparams['IS_REAL']
+
+    device = noise_image.device
 
     M = noise_image.numel() 
     n = len(mu_values_grid)
@@ -186,7 +193,6 @@ def RWP(mu_values_grid, noise_image, back_vec, parameters, optim = Pgd_Backtrack
     ssim_vecs = torch.empty(n, device=device) if not is_realdata else None   
     
     min_distance = float('inf') 
-    best_x_w = None
     
     # --- 1. SETUP DEL SOLVER ---
     SolverClass = optim
@@ -222,9 +228,9 @@ def RWP(mu_values_grid, noise_image, back_vec, parameters, optim = Pgd_Backtrack
         solver = SolverClass(parameters, algorithm = algorithm, is_3d=is_3d, is_realdata = is_realdata)
 
         results = solver.solve(y=noise_image)
-        x_result = results['x_result']
       
         # Calcolo e riadattamento di lambda_d
+        x_result = results['x_result']
         lambda_d = physics(x_result) + back_vec.view(-1, 1, 1, 1)
         if is_3d:
             lambda_d = lambda_d.sum(1).unsqueeze(1)
@@ -253,9 +259,9 @@ def RWP(mu_values_grid, noise_image, back_vec, parameters, optim = Pgd_Backtrack
         
         # Aggiornamento del minimo
         if W_sum[i] < min_distance:
-            best_x_w = x_result
+            best_results = results
             min_distance = W_sum[i]
 
         print(f"WP = {W_sum[i]:.4f}")
 
-    return W_sum, psnr_vecs, ssim_vecs, best_x_w, wh_true
+    return W_sum, psnr_vecs, ssim_vecs, best_results, wh_true
