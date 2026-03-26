@@ -38,17 +38,17 @@ mu_values_grid = mu_values_grid.to(device)
 hparams = {
     'Nz': 2,
     'pxsize': 40,
-    'IS_REAL': True,
+    'IS_REAL': False,
     'LOAD_FROM_FILE': True,
-    'flux': 30,
-    'lam': 0.1,
+    'flux': 20,
+    'lam': 0.001,
     'mu_grid': mu_values_grid
 }
 
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
 opt_sec = '3D' if hparams['IS_3D'] else '2D'
-hparams['real_name'] = '06_convallaria' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
+hparams['real_name'] = '01_tomm20' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -71,7 +71,7 @@ dataset = prepare_ism_data(
 ## ALGORITHM
 
 ALGORITHM = "pgd"       # "prox" o "pgd"
-MASK = 'masked'          # 'whole' 'masked' 'masked_eps'
+MASK = 'masked_eps'          # 'whole' 'masked' 'masked_eps'
 
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
@@ -88,7 +88,14 @@ CONFIG_REG = {
         "prior": (l1.forward_3D, l1.forward),
         "prior_grad": (None, None),
         "prox": (tresholding_3D, tresholding)
-    }
+    },
+    "md": {
+        "prior": (l1.forward_3D, l1.forward),
+        # "prior": (tv.forward_3D, tv.forward),
+        # "prior_grad": (tv.grad_3D, tv.grad),
+        "prior_grad": (l1.grad, l1.grad),
+        "prox": (None, None)
+    },
 }
 
 idx = 0 if hparams['IS_3D'] else 1
@@ -97,7 +104,7 @@ cfg = CONFIG_REG[ALGORITHM]
     
 parameters = {
     "max_iter": 10000,
-    "tollerance": 1e-10,
+    "tollerance": 1e-12,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
@@ -114,8 +121,12 @@ parameters = {
     "prior_grad": cfg["prior_grad"][idx]
 }
 
+save_path = f"Results/WP/wp_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
-W_sum, psnr_vecs, ssim_vecs, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps=1)
+print(f"White princ per risultati in: {save_path}")
+
+
+W_sum, psnr_vecs, ssim_vecs, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps_f=5)
 
 results = { "W_sum": W_sum,
             "psnr_vecs": psnr_vecs,
@@ -125,13 +136,11 @@ results = { "W_sum": W_sum,
             "ground_truth": dataset["ground_truth"]}
 
 
-
 ## SAVE RESULTS
 
 save_path = f"Results/WP/wp_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
 print(f"Salvataggio risultati in: {save_path}")
-
 
 clean_dataset = {
     "noise_image": dataset["noise_image"].cpu() if isinstance(dataset["noise_image"], torch.Tensor) else dataset["noise_image"],
@@ -150,11 +159,35 @@ torch.save({
 
 
 
+#%%
 
 
+# best_mu, best_rwp, RWP_vec, best_results = RWP_Adam_1Step (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps=2, max_outer_iter=300, lrate = 1e-3, stepsize = 50, gamma=0.9)
 
 
+# save_path = f"Results/WP/wp_optim_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
+# print(f"Salvataggio risultati in: {save_path}")
+
+# results = { "best_mu": best_mu, 
+#            "W_sum": best_rwp,
+#             "results_best": best_results,
+#             'rwp_vec': RWP_vec,
+#             "ground_truth": dataset["ground_truth"]}
+
+
+# clean_dataset = {
+#     "noise_image": dataset["noise_image"].cpu() if isinstance(dataset["noise_image"], torch.Tensor) else dataset["noise_image"],
+#     "ground_truth": dataset["ground_truth"].cpu() if isinstance(dataset["ground_truth"], torch.Tensor) else dataset["ground_truth"],
+#     "clean_image":dataset["clean_image"].cpu() if isinstance(dataset["clean_image"], torch.Tensor) else dataset["clean_image"],
+#     'meta': dataset["meta"].cpu() if isinstance(dataset["meta"], torch.Tensor) else dataset["meta"],
+# }
+
+# torch.save({
+#     'hparams': hparams,
+#     'results_optim': results,
+#     'dataset': clean_dataset
+# }, save_path)
 
 
 

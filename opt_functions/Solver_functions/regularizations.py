@@ -148,7 +148,7 @@ def sobolev_grad(image):
     
     return sobolev_grad
 
-class l1Loss(nn.Module):
+class l1Loss(nn.Module): 
     def __init__(self):
         super().__init__()
 
@@ -160,6 +160,10 @@ class l1Loss(nn.Module):
         x = x[:,1].unsqueeze(1)
         
         return torch.norm(x, p=1)
+    
+    def grad(self,x):
+
+        return torch.ones_like(x)
 
 
 

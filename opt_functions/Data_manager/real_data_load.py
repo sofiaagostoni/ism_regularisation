@@ -55,6 +55,7 @@ def load_real_data(path, file, Nz):
     data, meta = mcs.load(fullpath)
     print(f"data shape {data.shape}")
     dset = data
+    device = dset.device
     # dset = dset.sum(1)
     if dset.shape[1] > 1:
         dset = dset[:,int(dset.shape[1]/2) - 1: int(dset.shape[1]/2)]
@@ -168,7 +169,8 @@ def generate_realdata(path, file, Nz):
 
 def info_from_realdata(noise_image, meta, PSF, Nz):
 
-    
+    device = noise_image.device
+  
     if Nz == 1: 
             
         PSF = PSF[:,1:2,:,:]

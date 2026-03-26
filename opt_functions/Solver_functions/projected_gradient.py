@@ -201,13 +201,13 @@ class Pgd_Backtracking(BaseISMSolver):
             sqnorm = torch.sum(diff_x ** 2)
             
             if self.algorithm == "pgd" or self.algorithm == "prox":
-                dist = (L_candidate / 2.0) * sqnorm
+                dist = (L_candidate / 2.0) * sqnorm + grad_dot
                 
             elif self.algorithm == "md":
                 dist = - (0.8 / tau) * Bregman_h(x_next, x_curr)
         
             # CONDIZIONE DI BACKTRACKING CORRETTA
-            if f_x_next <= f_y_eval + grad_dot + dist:
+            if f_x_next <= f_y_eval + dist:
                 break
                 
             L_candidate *= self.eta

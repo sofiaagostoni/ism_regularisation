@@ -31,27 +31,45 @@ mu_values_grid = torch.concat(
 ).to(device)
 
 
-def run_experiment(real_name, nz, algorithm):
+def run_experiment(nz, algorithm):
     """
     Esegue un singolo esperimento e salva i risultati.
     """
+    # ==========================================
+    # 1. CONTROLLO PREVENTIVO ESISTENZA FILE
+    # ==========================================
+    MASK = 'masked'
+    is_3d = (nz > 1)
+    opt_sec = '3D' if is_3d else '2D'
+    
+    real_name = 'tubulin'
+
+    
+    os.makedirs("Results/WP", exist_ok=True) # Assicura che la cartella esista
+    save_path = f"Results/WP/wp_{opt_sec}_{algorithm}_{MASK}_{real_name}.pth"
+
+    if os.path.exists(save_path):
+        print(f"\n[SKIP] L'esperimento {real_name} | Nz={nz} | Algo={algorithm} è già completato. File: {save_path}")
+        return # Esce immediatamente dalla funzione e passa al prossimo
+
+    # ==========================================
+    # 2. SE IL FILE NON ESISTE, AVVIA I CALCOLI
+    # ==========================================
     print(f"\n--- Avvio exp: Dataset={real_name} | Nz={nz} | Algo={algorithm} ---")
     
     ## HYPER PARAM SETTING
     hparams = {
         'Nz': nz,
         'pxsize': 40,
-        'IS_REAL': True,
+        'IS_REAL': False,
         'LOAD_FROM_FILE': True,
         'flux': 30,
         'lam': 0.1,
         'mu_grid': mu_values_grid,
-        'real_name': real_name
+        'real_name': real_name,
+        'IS_3D': is_3d
     }
 
-    hparams['IS_3D'] = (hparams['Nz'] > 1)
-    opt_sec = '3D' if hparams['IS_3D'] else '2D'
-    
     # NOTA: Controlla che questa logica del path vada bene per tutti i tuoi 8 dataset
     hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
@@ -70,8 +88,6 @@ def run_experiment(real_name, nz, algorithm):
     )
 
     ## ALGORITHM E LOSSES
-    MASK = 'masked'
-    
     kl = KL(back=dataset["back_vec"])
     tv = TVLoss()
     l1 = l1Loss()
@@ -128,11 +144,6 @@ def run_experiment(real_name, nz, algorithm):
                 "ground_truth": dataset["ground_truth"]}
 
     ## SAVE RESULTS
-    # Creazione della cartella se non esiste
-    os.makedirs("Results/WP", exist_ok=True)
-    
-    save_path = f"Results/WP/wp_{opt_sec}_{algorithm}_{MASK}_{hparams['real_name']}.pth"
-
     clean_dataset = {
         "noise_image": dataset["noise_image"].cpu() if isinstance(dataset["noise_image"], torch.Tensor) else dataset["noise_image"],
         "ground_truth": dataset["ground_truth"].cpu() if isinstance(dataset["ground_truth"], torch.Tensor) else dataset["ground_truth"],
@@ -148,37 +159,64 @@ def run_experiment(real_name, nz, algorithm):
     
     print(f"Salvato con successo in: {save_path}")
 
+
 # ==========================================
 # CONFIGURAZIONE DEL GRID SEARCH NOTTURNO
 # ==========================================
 
+# if __name__ == "__main__":
+#     # I tuoi 8 dataset
+#     datasets_list = [
+#         '01_tomm20', '02_tomm20', '03_tomm20', '04_tomm20',
+#         '05_convallaria', '06_convallaria', '07_tubulin', '08_tubulin'
+#     ] 
+    
+
+    
+#     nz_list = [1, 2]
+#     algorithms_list = ["prox", "pgd"]
+
+#     # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
+#     experiments = list(itertools.product(datasets_list, nz_list, algorithms_list))
+
+#     print(f"Inizio sessione: trovati {len(experiments)} esperimenti da lanciare.")
+
+#     # Ciclo su tutte le combinazioni con barra di progresso
+#     for real_name, nz, algo in tqdm(experiments, desc="Progresso Globale"):
+#         try:
+#             run_experiment(real_name, nz, algo)
+#         except Exception as e:
+#             print(f"\n[ERRORE] L'esperimento con {real_name}, Nz={nz}, algo={algo} è fallito!")
+#             print(f"Dettaglio errore: {e}")
+        
+#         finally:
+#             if torch.cuda.is_available():
+#                 torch.cuda.empty_cache()
+#             gc.collect()
+            
+#     print("\nTutti gli esperimenti sono terminati!")
+
+
 if __name__ == "__main__":
-    # INSERISCI QUI I TUOI 8 NOMI
-    datasets_list = [
-        '01_tomm20', '02_tomm20', '03_tomm20', '04_tomm20',
-        '05_convallaria', '06_convallaria', '07_tubulin', '08_tubulin'
-    ] 
+    # I tuoi 8 dataset
     
     nz_list = [1, 2]
     algorithms_list = ["prox", "pgd"]
 
     # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
-    experiments = list(itertools.product(datasets_list, nz_list, algorithms_list))
+    experiments = list(itertools.product( nz_list, algorithms_list))
 
     print(f"Inizio sessione: trovati {len(experiments)} esperimenti da lanciare.")
 
     # Ciclo su tutte le combinazioni con barra di progresso
-    for real_name, nz, algo in tqdm(experiments, desc="Progresso Globale"):
+    for nz, algo in tqdm(experiments, desc="Progresso Globale"):
         try:
-            run_experiment(real_name, nz, algo)
+            run_experiment(nz, algo)
         except Exception as e:
-            # Se un esperimento fallisce, stampa l'errore ma continua col prossimo
-            print(f"\n[ERRORE] L'esperimento con {real_name}, Nz={nz}, algo={algo} è fallito!")
+            print(f"\n[ERRORE] L'esperimento, Nz={nz}, algo={algo} è fallito!")
             print(f"Dettaglio errore: {e}")
         
         finally:
-            # Svuota la cache di PyTorch e forza il Garbage Collector 
-            # FONDAMENTALE per non saturare la RAM/VRAM nei cicli lunghi
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()

@@ -123,8 +123,12 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             plot([noise_image.sum(0), x_result[:,1:2], x_result[:,0:1] ], cmap = 'hot')
 
             gr.ShowImg(x_result[:,1:2].to("cpu"), grid.pxsizex*1e-3)
+            gr.ShowImg(x_result[:,0:1].to("cpu"), grid.pxsizex*1e-3)
+
             gr.ShowImg(dataset["ground_truth"][:,1:2].to("cpu"), grid.pxsizex*1e-3)
+            gr.ShowImg(dataset["ground_truth"][:,0:1].to("cpu"), grid.pxsizex*1e-3)
             gr.ShowImg(noise_image.sum(0).to("cpu"), grid.pxsizex*1e-3)
+            gr.ShowImg(noise_image[12:13].to("cpu"), grid.pxsizex*1e-3)
 
             plot_met(funct.cpu(), funct_metric.cpu(), iter_err.cpu(), psnr_vec.cpu(), ssim_vec.cpu())
 
@@ -138,8 +142,10 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             plot([noise_image.sum(0), x_result], cmap = 'hot')
 
             gr.ShowImg(x_result.to("cpu"), grid.pxsizex*1e-3)
-            gr.ShowImg(dataset["ground_truth"].to("cpu"), grid.pxsizex*1e-3)
+
             gr.ShowImg(noise_image.sum(0).to("cpu"), grid.pxsizex*1e-3)
+            gr.ShowImg(noise_image[12:13].to("cpu"), grid.pxsizex*1e-3)
+
 
             plot_met(funct.cpu(), funct_metric.cpu(), iter_err.cpu(), psnr_vec.cpu(), ssim_vec.cpu())
 
@@ -155,27 +161,30 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             meta = dataset['meta']
             clabel = meta.pxdwelltime
             
-            fig, ax = plt.subplots(2,2, sharex = 'row', sharey = 'row', figsize = (10,10))
+            # Assicurati di avere importato anche matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(2, 2, sharex='row', sharey='row', figsize=(10,10))
 
             x0 = x0_sec
             y0 = y0_sec
             dx = 180
             dy = 180
-            # Create a Rectangle patch
-            rect = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
 
-            gr.ShowImg(x_result[:,1:2,:, :], meta.dx, clabel, fig = fig, ax = ax[0,1])
-            gr.ShowImg(x_result[:,1:2,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig = fig, ax = ax[1,1])
-            ax[0,1].add_patch(rect)
+            # Creiamo DUE rettangoli identici, uno per ogni subplot
+            rect1 = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
+            rect2 = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
+
+            # --- Prima Colonna (Destra: [0,1] e [1,1]) ---
+            gr.ShowImg(x_result[:,1:2,:, :], meta.dx, clabel, fig=fig, ax=ax[0,1])
+            gr.ShowImg(x_result[:,1:2,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig=fig, ax=ax[1,1])
+            ax[0,1].add_patch(rect1) # Aggiungiamo il primo rettangolo
             ax[0,1].set_title("Reconstruction")
 
-            gr.ShowImg(noise_image[12:13,:,:, :], meta.dx, clabel, fig = fig, ax = ax[0,0])
-            gr.ShowImg(noise_image[12:13,:,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig = fig, ax = ax[1,0])
+            # --- Seconda Colonna (Sinistra: [0,0] e [1,0]) ---
+            gr.ShowImg(noise_image[12:13,:,:, :], meta.dx, clabel, fig=fig, ax=ax[0,0])
+            gr.ShowImg(noise_image[12:13,:,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig=fig, ax=ax[1,0])
+            ax[0,0].add_patch(rect2) # Aggiungiamo il secondo rettangolo
             ax[0,0].set_title("Noise image center")
-            gr.ShowImg(noise_image.sum(0), meta.dx, clabel, fig = fig, ax = ax[0,0])
-            gr.ShowImg(noise_image[:,:,x0:x0+dx, y0:y0+dx].sum(0), meta.dx, clabel, fig = fig, ax = ax[1,0])
-            ax[0,0].set_title("Noise image center")
-            # ax[1,0].add_patch(rect)
 
             fig.tight_layout()
             
@@ -232,6 +241,139 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
     W_sum = results["W_sum"]
     psnr_vecs = results["psnr_vecs"]  
     ssim_vecs = results["ssim_vecs"]
+    results_best = results["results_best"]
+    x_best = results_best["x_result"]
+    # Portiamo tutto su CPU per matplotlib
+    mu_vals = mu_values_grid.detach().cpu()
+    W = torch.abs(W_sum).detach().cpu()
+    
+    # Calcolo ottimo per WP
+    min_idx = torch.argmin(W)
+    mu_best_wp = mu_vals[min_idx]
+    
+    print(f"--- Risultati per {title} ---")
+    print(f"Mu ottimale (min WP): {mu_best_wp.item():.6e} con WP = {W[min_idx].item():.6e}")
+
+    # Impostazioni notazione scientifica asse Y
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((-1, 1))
+
+    if is_real:
+        # Caso dati reali: plottiamo SOLO W_sum
+        fig, ax1 = plt.subplots(figsize=(8, 5))
+        ax1.plot(mu_vals, W, label="RWP", color="tab:blue")
+        ax1.plot(mu_best_wp, W[min_idx], 'go')
+        
+        ax1.yaxis.set_major_formatter(formatter)
+        ax1.set_xlabel("$\mu$")
+        ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+        ax1.tick_params(axis='y', labelcolor="tab:blue")
+        ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
+        
+        ax1.legend(loc='best')
+        plt.title(f"{title} (Dati Reali)")
+        plt.tight_layout()
+        plt.grid(True)
+        plt.show()
+        
+        
+        meta = dataset['meta']
+        noise_image = dataset['noise_image'].cpu()
+        x_best = x_best.cpu()
+        clabel = meta.pxdwelltime
+
+        
+    else:
+        # Caso dati simulati: abbiamo PSNR e SSIM
+        psnr = psnr_vecs.detach().cpu()
+        ssim = ssim_vecs.detach().cpu()
+        max_idx_psnr = torch.argmax(psnr)
+        max_idx_ssim = torch.argmax(ssim)
+        
+        print(f"Mu ottimale (max PSNR): {mu_vals[max_idx_psnr].item():.6e} con PSNR = {psnr[max_idx_psnr].item():.4f} dB")
+        print(f"Mu ottimale (max SSIM): {mu_vals[max_idx_ssim].item():.6e} con SSIM = {ssim[max_idx_ssim].item():.4f}\n")
+
+        if layout == "twin":
+            # Layout con doppio asse Y (WP a sinistra, PSNR a destra)
+            fig, ax1 = plt.subplots(figsize=(8, 5))
+
+            ax1.plot(mu_vals, W, label="RWP", color="tab:blue")
+            ax1.plot(mu_best_wp, W[min_idx], 'go')
+            ax1.yaxis.set_major_formatter(formatter)
+            ax1.set_xlabel("$\mu$")
+            ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+            ax1.tick_params(axis='y', labelcolor="tab:blue")
+            ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
+
+            ax2 = ax1.twinx()
+            ax2.plot(mu_vals, psnr, label="PSNR", color="tab:orange")
+            ax2.plot(mu_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
+            ax2.set_ylabel("PSNR (dB)", color="tab:orange")
+            ax2.tick_params(axis='y', labelcolor="tab:orange")
+            ax2.axvline(mu_vals[max_idx_psnr].item(), color="red", linestyle="--", alpha=0.7)
+
+            # Combina le legende
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+
+            plt.title(title)
+            plt.tight_layout()
+            plt.grid(True)
+            plt.show()
+
+        elif layout == "stacked":
+            # Layout con 3 subplot separati verticalmente
+            fig, axs = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
+
+            # RWP
+            axs[0].plot(mu_vals, W, color="tab:blue")
+            axs[0].plot(mu_best_wp, W[min_idx], 'go')
+            axs[0].axvline(mu_best_wp.item(), color="green", linestyle="--")
+            axs[0].yaxis.set_major_formatter(formatter)
+            axs[0].set_ylabel("WP")
+            axs[0].grid(True)
+
+            # PSNR
+            axs[1].plot(mu_vals, psnr, color="tab:orange")
+            axs[1].plot(mu_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
+            axs[1].axvline(mu_vals[max_idx_psnr].item(), color="red", linestyle="--")
+            axs[1].set_ylabel("PSNR (dB)")
+            axs[1].grid(True)
+
+            # SSIM
+            axs[2].plot(mu_vals, ssim, color="tab:green")
+            axs[2].plot(mu_vals[max_idx_ssim], ssim[max_idx_ssim], 'go')
+            axs[2].axvline(mu_vals[max_idx_ssim].item(), color="green", linestyle="--")
+            axs[2].set_ylabel("SSIM")
+            axs[2].set_xlabel("$\mu$")
+            axs[2].grid(True)
+
+            plt.suptitle(title)
+            plt.tight_layout()
+            plt.show()
+                       
+    plot_results(results_best, dataset, is_real, is_3d, pxsize, x0_sec = 100, y0_sec = 100)
+    
+    
+    
+def plot_wp_optim_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_3d = True, title="Metrica", layout="twin"):
+    """
+    Plotta i risultati dell'ottimizzazione del parametro mu.
+    
+    Parametri:
+    - mu_values_grid: tensore con i valori di mu
+    - W_sum: tensore con i valori della loss/WP
+    - psnr_vecs: tensore con i valori di PSNR (ignorato se is_real=True)
+    - ssim_vecs: tensore con i valori di SSIM (ignorato se is_real=True)
+    - is_real: bool, se True non plotta PSNR e SSIM
+    - title: stringa per il titolo del grafico (es. "TV", "SOB")
+    - layout: "twin" (grafico singolo con doppio asse Y) o "stacked" (3 subplot separati)
+    """
+    
+    W_sum = results["W_sum"]
+
     results_best = results["results_best"]
     x_best = results_best["x_result"]
     # Portiamo tutto su CPU per matplotlib

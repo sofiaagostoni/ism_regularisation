@@ -13,6 +13,11 @@ from opt_functions.Data_manager.generate_measurments import *
 from opt_functions.plot_results import *
 from opt_functions.Solver_functions import *
 from opt_functions.Data_manager.real_data_load import *
+from opt_functions.Solver_functions.projected_gradient import *
+from opt_functions.Solver_functions.regularizations import *
+from opt_functions.Solver_functions.white_opt_princ import *
+from opt_functions.Solver_functions.Kulback_libler import *
+
 
 
 from microssim import MicroSSIM, micro_structural_similarity
@@ -42,17 +47,17 @@ tv= TVLoss()
 
 
 hparams = {
-    'Nz': 2,
+    'Nz': 1,
     'pxsize': 40,
-    'IS_REAL': True,
+    'IS_REAL': False,
     'LOAD_FROM_FILE': True,
-    'flux': 30,
-    'lam': 0.001
+    'flux': 20,
+    'lam': 0
 }
 
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
-hparams['real_name'] = '04_tomm20' if hparams['IS_REAL'] else 'tubulin'
+hparams['real_name'] = '02_tomm20' if hparams['IS_REAL'] else 'tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -69,9 +74,10 @@ dataset = prepare_ism_data(
     show_plots = True
 )
 
+
 #%%
 
-ALGORITHM = "md"       # "prox" o "pgd"
+ALGORITHM = "pgd"       # "prox" o "pgd"
 
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
@@ -102,8 +108,8 @@ cfg = CONFIG_REG[ALGORITHM]
     
     
 parameters = {
-    "max_iter": 100000,
-    "tollerance": 1e-12,
+    "max_iter": 10000,
+    "tollerance": 1e-8,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
@@ -148,3 +154,24 @@ torch.save({
 
 
 
+M = dataset['noise_image'].numel() 
+mask_type = "masked"
+lambda_d = dataset['physics'](results['x_result']) + dataset['back_vec'].view(-1, 1, 1, 1)
+if hparams['IS_3D']:
+    lambda_d = lambda_d.sum(1).unsqueeze(1)
+
+# Calcolo di Z per il risultato corrente
+if mask_type == "masked":
+    Z = standardize_unbiased_masked(dataset['noise_image'], lambda_d) 
+elif mask_type == "masked_eps":
+    Z = standardize_unbiased_masked_eps(dataset['noise_image'], lambda_d, eps = 1)
+elif mask_type == "whole":
+    Z = standardize(dataset['noise_image'], lambda_d)
+else:
+    raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
+
+# Metriche Whiteness
+wh = whiteness_measure(Z)
+W_sum = M * wh
+
+print(f"RWP value with lam = {hparams['lam']} is {W_sum}")
