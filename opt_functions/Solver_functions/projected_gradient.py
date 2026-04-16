@@ -45,7 +45,7 @@ class BaseISMSolver:
         self.is_3d = is_3d
         self.is_realdata = is_realdata
         self.device = parameters["x_init"].device
-        self.back = parameters["back"].device
+        self.back = parameters["back"]
         
         self.max_iter = parameters["max_iter"]
         self.lam = parameters["lam"]
@@ -92,6 +92,15 @@ class BaseISMSolver:
                 f_x_next = self.data_fid(y, x_next, self.physics) + lam * self.prior(x_next)
                 g_for_dot = g_tot
                 
+            elif self.algorithm =='rl':
+                
+                x_next = (self.physics.A_adjoint( y / (self.physics(x_curr) + self.back.view(25,1,1,1)))) * x_curr
+                x_next = x_next.sum(0).unsqueeze(0)
+                g_for_dot = None
+                f_y_eval = self.data_fid(y, x_curr, self.physics) 
+                f_x_next = self.data_fid(y, x_next, self.physics)
+                
+                
             else:
                 raise ValueError(f"Algoritmo {self.algorithm} non supportato.")
             
@@ -137,6 +146,7 @@ class BaseISMSolver:
 
             if not self.is_realdata:
                 x_gt = self.params["ground_truth"]
+                # print(x_gt.shape)
                 x_gt_norm = (x_gt[:, 1:2] if self.is_3d else x_gt) / (x_gt[:, 1:2] if self.is_3d else x_gt).max()
                 x_next_norm = (x_next_err if self.is_3d else x_next) / (x_next_err if self.is_3d else x_next).max()
 
@@ -172,7 +182,18 @@ class Pgd(BaseISMSolver):
         state['x_curr'] = x_next
         state['f_x_next'] = f_x_next # Salviamo la loss!
         return state
-
+    
+class RichLucy(BaseISMSolver):
+    def _step(self, state, y):
+        x_curr = state['x_curr']
+        tau = 1.0 / self.L_max
+        x_next, _, _, f_x_next = self._get_candidate_and_metrics(x_curr, tau, y, self.lam)
+        
+        state['x_prev'] = x_curr
+        state['x_curr'] = x_next
+        state['f_x_next'] = f_x_next # Salviamo la loss!
+        return state
+    
 class Pgd_Backtracking(BaseISMSolver):
     # Aggiungiamo l'init per avere delta, s ed eta come attributi di classe
     def __init__(self, parameters, algorithm="pgd", is_3d=False, is_realdata=False, s=1.0, eta=2, delta=0.9):

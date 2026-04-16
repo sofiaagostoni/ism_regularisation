@@ -30,27 +30,28 @@ mu_values_grid = torch.concat(
     dim=0
 ).to(device)
 
+MASK = 'masked'
 
-def run_experiment(nz, algorithm):
+def run_experiment(real_name, nz, algorithm, MASK):
     """
     Esegue un singolo esperimento e salva i risultati.
     """
     # ==========================================
     # 1. CONTROLLO PREVENTIVO ESISTENZA FILE
     # ==========================================
-    MASK = 'masked'
+    
     is_3d = (nz > 1)
     opt_sec = '3D' if is_3d else '2D'
     
-    real_name = 'tubulin'
+    real_name = real_name
 
     
     os.makedirs("Results/WP", exist_ok=True) # Assicura che la cartella esista
     save_path = f"Results/WP/wp_{opt_sec}_{algorithm}_{MASK}_{real_name}.pth"
 
-    if os.path.exists(save_path):
-        print(f"\n[SKIP] L'esperimento {real_name} | Nz={nz} | Algo={algorithm} è già completato. File: {save_path}")
-        return # Esce immediatamente dalla funzione e passa al prossimo
+    # if os.path.exists(save_path):
+    #     print(f"\n[SKIP] L'esperimento {real_name} | Nz={nz} | Algo={algorithm} è già completato. File: {save_path}")
+    #     return # Esce immediatamente dalla funzione e passa al prossimo
 
     # ==========================================
     # 2. SE IL FILE NON ESISTE, AVVIA I CALCOLI
@@ -61,9 +62,9 @@ def run_experiment(nz, algorithm):
     hparams = {
         'Nz': nz,
         'pxsize': 40,
-        'IS_REAL': False,
+        'IS_REAL': True,
         'LOAD_FROM_FILE': True,
-        'flux': 30,
+        'flux': 20,
         'lam': 0.1,
         'mu_grid': mu_values_grid,
         'real_name': real_name,
@@ -96,13 +97,20 @@ def run_experiment(nz, algorithm):
         "pgd": {
             "prior": (tv.forward_3D, tv.forward),
             "prior_grad": (tv.grad_3D, tv.grad),
-            "prox": (None, None) 
+            "prox": (None, None) # PGD non usa prox solitamente
         },
         "prox": {
             "prior": (l1.forward_3D, l1.forward),
             "prior_grad": (None, None),
             "prox": (tresholding_3D, tresholding)
-        }
+        },
+        "md": {
+            # "prior": (l1.forward_3D, l1.forward),
+            "prior": (tv.forward_3D, tv.forward),
+            "prior_grad": (tv.grad_3D, tv.grad),
+            # "prior_grad": (l1.grad, l1.grad),
+            "prox": (None, None)
+        },
     }
 
     idx = 0 if hparams['IS_3D'] else 1
@@ -132,8 +140,8 @@ def run_experiment(nz, algorithm):
         dataset, parameters, hparams, 
         optim=Pgd_Backtracking, 
         algorithm=algorithm, 
-        mask_type=MASK, 
-        eps=1
+        mask_type = MASK, 
+        eps_f=0
     )
 
     results = { "W_sum": W_sum,
@@ -164,29 +172,58 @@ def run_experiment(nz, algorithm):
 # CONFIGURAZIONE DEL GRID SEARCH NOTTURNO
 # ==========================================
 
+if __name__ == "__main__":
+    # I tuoi 8 dataset
+    datasets_list = [
+        '01_tomm20', '02_tomm20', '03_tomm20', '04_tomm20',
+        '05_convallaria', '06_convallaria', '07_tubulin', '08_tubulin'
+    ] 
+    
+    
+    nz_list = [2]
+    algorithms_list = ["pgd", "md"]
+
+    # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
+    experiments = list(itertools.product(datasets_list, nz_list, algorithms_list))
+
+    print(f"Inizio sessione: trovati {len(experiments)} esperimenti da lanciare.")
+    
+    MASK = "masked"
+
+    # Ciclo su tutte le combinazioni con barra di progresso
+    for real_name, nz, algo in tqdm(experiments, desc="Progresso Globale"):
+        try:
+            run_experiment(real_name, nz, algo, MASK)
+        except Exception as e:
+            print(f"\n[ERRORE] L'esperimento con {real_name}, Nz={nz}, algo={algo} è fallito!")
+            print(f"Dettaglio errore: {e}")
+        
+        finally:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            
+            
+    print("\nTutti gli esperimenti sono terminati!")
+
+
 # if __name__ == "__main__":
 #     # I tuoi 8 dataset
-#     datasets_list = [
-#         '01_tomm20', '02_tomm20', '03_tomm20', '04_tomm20',
-#         '05_convallaria', '06_convallaria', '07_tubulin', '08_tubulin'
-#     ] 
-    
-
     
 #     nz_list = [1, 2]
 #     algorithms_list = ["prox", "pgd"]
 
 #     # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
-#     experiments = list(itertools.product(datasets_list, nz_list, algorithms_list))
+#     experiments = list(itertools.product( nz_list, algorithms_list))
 
 #     print(f"Inizio sessione: trovati {len(experiments)} esperimenti da lanciare.")
 
 #     # Ciclo su tutte le combinazioni con barra di progresso
-#     for real_name, nz, algo in tqdm(experiments, desc="Progresso Globale"):
+#     for nz, algo in tqdm(experiments, desc="Progresso Globale"):
 #         try:
-#             run_experiment(real_name, nz, algo)
+#             run_experiment(nz, algo)
 #         except Exception as e:
-#             print(f"\n[ERRORE] L'esperimento con {real_name}, Nz={nz}, algo={algo} è fallito!")
+#             print(f"\n[ERRORE] L'esperimento, Nz={nz}, algo={algo} è fallito!")
 #             print(f"Dettaglio errore: {e}")
         
 #         finally:
@@ -195,30 +232,3 @@ def run_experiment(nz, algorithm):
 #             gc.collect()
             
 #     print("\nTutti gli esperimenti sono terminati!")
-
-
-if __name__ == "__main__":
-    # I tuoi 8 dataset
-    
-    nz_list = [1, 2]
-    algorithms_list = ["prox", "pgd"]
-
-    # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
-    experiments = list(itertools.product( nz_list, algorithms_list))
-
-    print(f"Inizio sessione: trovati {len(experiments)} esperimenti da lanciare.")
-
-    # Ciclo su tutte le combinazioni con barra di progresso
-    for nz, algo in tqdm(experiments, desc="Progresso Globale"):
-        try:
-            run_experiment(nz, algo)
-        except Exception as e:
-            print(f"\n[ERRORE] L'esperimento, Nz={nz}, algo={algo} è fallito!")
-            print(f"Dettaglio errore: {e}")
-        
-        finally:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            
-    print("\nTutti gli esperimenti sono terminati!")

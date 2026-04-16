@@ -96,6 +96,7 @@ def compute_truncation_stats_eps(lam, eps):
     return E_eps.squeeze(-1).to(torch.float32), Var_eps.squeeze(-1).to(torch.float32)
 
 
+
 def standardize_unbiased_masked(Y, lam):
     """
     Calcola la versione 'masked' z_+(U) come definita in Sezione 4.5.
@@ -139,42 +140,125 @@ def standardize_unbiased_masked_eps(Y, lam, eps):
     
     return Z_eps_masked
 
-def whiteness_measure(Z: torch.Tensor) -> torch.Tensor:
-    """
-    Calcola W(Z) utilizzando la Proposizione 2.1 (dominio delle frequenze).
-    Assume condizioni al contorno periodiche.
+# def whiteness_measure(Z: torch.Tensor) -> torch.Tensor:
+#     """
+#     Calcola W(Z) utilizzando la Proposizione 2.1 (dominio delle frequenze).
+#     Assume condizioni al contorno periodiche.
     
-    Z: tensor 3D (m1, m2, m3), reale.
-    Ritorna: scalare (Tensor) rappresentante la misura di bianchezza.
+#     Z: tensor 3D (m1, m2, m3), reale.
+#     Ritorna: scalare (Tensor) rappresentante la misura di bianchezza.
+#     """
+#     if Z.ndim != 3:
+#         # Se Z ha una dimensione batch o canale (es. 1, m1, m2, m3), la rimuoviamo
+#         Z = Z.squeeze()
+#         if Z.ndim != 3:
+#             raise ValueError(f"Z deve essere 3D, ma ha shape {Z.shape}")
+
+#     # 1. Trasformata di Fourier 3D (non serve padding con condizioni periodiche)
+#     # Usiamo rfftn (Real FFT) per efficienza se Z è reale
+#     FZ = torch.fft.fftn(Z)
+    
+#     # 2. Calcolo dei moduli al quadrato |z_tilde|^2
+#     # Nota: abs() su un complesso restituisce il modulo, eleviamo alla seconda
+#     mag_sq = torch.abs(FZ)**2
+    
+#     # 3. Numeratore: Somma dei moduli alla quarta power
+#     numerator = torch.sum(mag_sq**2)
+    
+#     # 4. Denominatore: Quadrato della somma dei moduli al quadrato
+#     denominator = torch.sum(mag_sq)**2
+    
+#     if denominator == 0:
+#         raise ValueError(f"Denominatore uguale a zero")
+        
+#     return numerator / denominator
+
+
+def whiteness_measure(Z: torch.Tensor, mode="standard", cutoff_ratio=0.10):
+    """
+    Calcola W(Z) nel dominio delle frequenze.
+    
+    Parametri:
+    - Z: tensor 3D (m1, m2, m3), il residuo standardizzato.
+    - mode: "standard" (tutte le frequenze) o "highpass" (ignora le basse frequenze).
+    - cutoff_ratio: percentuale della dimensione del tensore da azzerare al centro (es. 0.10 = 10%).
+    
+    Ritorna: 
+    - wh: il valore grezzo del rapporto del Whiteness Principle.
+    - M_eff: il numero di frequenze effettivamente utilizzate (serve per la normalizzazione).
     """
     if Z.ndim != 3:
-        # Se Z ha una dimensione batch o canale (es. 1, m1, m2, m3), la rimuoviamo
         Z = Z.squeeze()
         if Z.ndim != 3:
             raise ValueError(f"Z deve essere 3D, ma ha shape {Z.shape}")
 
-    # 1. Trasformata di Fourier 3D (non serve padding con condizioni periodiche)
-    # Usiamo rfftn (Real FFT) per efficienza se Z è reale
+    # 1. Trasformata di Fourier 3D
     FZ = torch.fft.fftn(Z)
     
-    # 2. Calcolo dei moduli al quadrato |z_tilde|^2
-    # Nota: abs() su un complesso restituisce il modulo, eleviamo alla seconda
-    mag_sq = torch.abs(FZ)**2
+    # 2. Shift: spostiamo la frequenza 0 (DC) esattamente al centro del tensore
+    # Questo ci permette di tagliare via le frequenze basse molto più facilmente
+    FZ_shifted = torch.fft.fftshift(FZ)
     
-    # 3. Numeratore: Somma dei moduli alla quarta power
+    # 3. Spettro di potenza (modulo al quadrato)
+    mag_sq = torch.abs(FZ_shifted)**2
+    
+    # Di default, il numero di frequenze attive è il numero totale di pixel
+    M_eff = Z.numel() 
+    
+    # 4. Applicazione del filtro passa-alto
+    if mode == "highpass":
+        s0, s1, s2 = mag_sq.shape
+        # Coordinate del centro esatto
+        c0, c1, c2 = s0 // 2, s1 // 2, s2 // 2
+        
+        # Calcoliamo quanti pixel tagliare a destra e sinistra del centro
+        # (se cutoff_ratio è 0.1, tagliamo +/- 5% dal centro)
+        r0 = max(1, int(s0 * cutoff_ratio / 2))
+        r1 = max(1, int(s1 * cutoff_ratio / 2))
+        r2 = max(1, int(s2 * cutoff_ratio / 2))
+        
+        # Azzera il blocco centrale (cioè cancella le basse frequenze)
+        mag_sq[c0-r0:c0+r0, c1-r1:c1+r1, c2-r2:c2+r2] = 0.0
+        
+        # Aggiorniamo il numero di frequenze attive sottranedo quelle azzerate
+        pixel_tagliati = (2*r0) * (2*r1) * (2*r2)
+        M_eff = M_eff - pixel_tagliati
+    
+    # 5. Numeratore e Denominatore
     numerator = torch.sum(mag_sq**2)
-    
-    # 4. Denominatore: Quadrato della somma dei moduli al quadrato
     denominator = torch.sum(mag_sq)**2
     
     if denominator == 0:
-        raise ValueError(f"Denominatore uguale a zero")
+        raise ValueError("Denominatore uguale a zero: o Z è vuoto, o il taglio è troppo grande.")
         
-    return numerator / denominator
+    return (numerator / denominator), M_eff
+
+
+def find_knee_point(mu_values, W_sum):
+    # Lavoriamo in scala logaritmica per mu se la griglia è logaritmica
+    log_mu = np.log10(mu_values + 1e-10)
+
+    # Normalizziamo entrambi gli assi tra 0 e 1 per confrontarli
+    w_norm = (W_sum - W_sum.min()) / (W_sum.max() - W_sum.min())
+    mu_norm = (log_mu - log_mu.min()) / (log_mu.max() - log_mu.min())
+
+    # Linea che unisce il primo e l'ultimo punto
+    # Distanza di ogni punto dalla retta: |(y2-y1)x - (x2-x1)y + x2y1 - y2x1|
+    p1 = np.array([mu_norm[0], w_norm[0]])
+    p2 = np.array([mu_norm[-1], w_norm[-1]])
+
+    distances = []
+    for i in range(len(mu_norm)):
+        p3 = np.array([mu_norm[i], w_norm[i]])
+        dist = np.cross(p2-p1, p1-p3) / np.linalg.norm(p2-p1)
+        distances.append(dist)
+
+    best_idx = np.argmax(distances)
+    return mu_values[best_idx]
 
 
 def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
-        algorithm="pgd", mask_type="masked", eps_f=1):
+        algorithm="pgd", mask_type="masked", eps_f=0):
     """
     Calcola il Residual Whiteness Principle (RWP) per una griglia di parametri mu (lambda).
     Sfrutta le classi OOP (PGDSolver, ProxSolver) per massima efficienza e pulizia.
@@ -221,15 +305,23 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
         if mask_type == "masked":
             Z_true = standardize_unbiased_masked(noise_image, clean_image_proc)
         elif mask_type == "masked_eps":
-            if eps_f > noise_image.max():
-                eps_f = noise_image.max() - 1
+            
+            if is_3d:
+            # Usa un percentile basso (es. 15%) per stimare il livello di fondo da Y
+                eps = torch.quantile(noise_image.float(), 0.15).item() 
+                print(f"Epsilon value for 3d is {eps}")
+            else:
+                eps = eps_f
+                print(f"Epsilon value for 2d is {eps}")
+
             Z_true = standardize_unbiased_masked_eps(noise_image, clean_image_proc, eps_f)
         elif mask_type == "whole":
             Z_true = standardize(noise_image, clean_image_proc)
         else:
             raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
 
-        wh_true = whiteness_measure(Z_true)
+        wh_true, M_eff = whiteness_measure(Z_true, mode="highpass", cutoff_ratio=0.10)
+        
 
     # --- 3. RICERCA SULLA GRIGLIA MU ---
     for i, mu in enumerate(tqdm(mu_values_grid, desc="Searching mu grid (RWP)")):
@@ -257,9 +349,9 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
         if mask_type == "masked":
             Z = standardize_unbiased_masked(noise_image, lambda_d) 
         elif mask_type == "masked_eps":
-            x1 = x_result[:,0:1]
-            # x1_masked = x1[x1 != 0]
-            eps = x1.mean() if is_3d else eps_f
+            # x1 = x_result[:,0:1]
+            # # x1_masked = x1[x1 != 0]
+            # eps = x1.mean() if is_3d else eps_f
             Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps)
         elif mask_type == "whole":
             Z = standardize(noise_image, lambda_d)
@@ -267,8 +359,8 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
             raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
             
         # Metriche Whiteness
-        wh = whiteness_measure(Z)
-        W_sum[i] = M * wh
+        wh, M_eff = whiteness_measure(Z, mode="highpass", cutoff_ratio=0.10)
+        W_sum[i] = M_eff * wh
         
         # Metriche PSNR/SSIM (solo se non siamo con dati reali)
         if not is_realdata:
@@ -281,11 +373,19 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
         # Aggiornamento del minimo
         if W_sum[i] < min_distance:
             best_results = results
+            mu_best = mu
             min_distance = W_sum[i]
 
         print(f"WP = {W_sum[i]}")
+        
+    mu_best_knee = find_knee_point(mu_values_grid.cpu(), W_sum.cpu())
+    
+    # parameters['lam'] = mu_best_knee
+    # solver = SolverClass(parameters, algorithm = algorithm, is_3d=is_3d, is_realdata = is_realdata)
 
-    return W_sum, psnr_vecs, ssim_vecs, best_results, wh_true
+    # results_knee = solver.solve(y=noise_image)
+
+    return W_sum, psnr_vecs, ssim_vecs, mu_best, best_results, wh_true
 
 
 def RWP_Adam_1Step(dataset, parameters, hparams, optim=Pgd_Backtracking,
@@ -387,3 +487,127 @@ def RWP_Adam_1Step(dataset, parameters, hparams, optim=Pgd_Backtracking,
 
     print(f"\nOttimizzazione completata. Miglior mu trovato: {best_mu:.6f} con RWP = {best_rwp:.4f}")
     return best_mu, best_rwp, RWP_vec, best_results
+
+
+
+
+
+
+# def find_knee_derivative(mu_values, W_sum): 
+#     # Calcola il gradiente (derivata prima) 
+#     dy = np.gradient(W_sum) 
+#     # Calcola la derivata seconda 
+#     ddy = np.gradient(dy) 
+#     # Il punto di massimo cambiamento di pendenza 
+#     best_idx = np.argmax(ddy) 
+    
+#     return mu_values[best_idx]
+
+
+# def find_knee_threshold(mu_values, W_sum, threshold=1.10):
+#     # Media dei primi punti (assumiamo siano nel plateau)
+#     plateau_val = np.mean(W_sum[:3])
+    
+#     # Trova il primo indice che supera il plateau del 10%
+#     for i, val in enumerate(W_sum):
+#         if val > plateau_val * threshold:
+#             # Ritorniamo il punto attuale o quello precedente per sicurezza
+#             return mu_values[max(0, i-1)] 
+            
+#     return mu_values[0]
+
+# def select_best_mu(mu_grid, W_sum):
+#     """
+#     Sceglie il mu ottimale basandosi sulla forma della curva RWP:
+#     - Se esiste un minimo locale chiaro (una valle), lo seleziona.
+#     - Se la curva è piatta (plateau) e poi sale, usa il metodo del gomito (Kneedle).
+#     """
+#     # Conversione in numpy (gestisce sia Liste che Tensor PyTorch)
+#     mu_np = mu_grid.cpu().numpy() if hasattr(mu_grid, 'cpu') else np.array(mu_grid)
+#     W_np = W_sum.cpu().numpy() if hasattr(W_sum, 'cpu') else np.array(W_sum)
+    
+#     idx_min = np.argmin(W_np)
+    
+#     # Verifichiamo se il minimo è "stabile" o è solo l'inizio di un plateau.
+#     # Un minimo è reale se non è il primo punto e se dopo di esso c'è una risalita.
+#     is_true_minimum = False
+#     if 0 < idx_min < len(W_np) - 1:
+#         # Se il valore finale è significativamente più alto del minimo (>5%),
+#         # consideriamo la curva come dotata di una valle reale.
+#         if W_np[-1] > W_np[idx_min] * 3:
+#             is_true_minimum = True
+
+#     if is_true_minimum:
+#         # CASO 1: Esiste una valle chiara
+#         return mu_np[idx_min]
+#     else:
+#         # CASO 2: Plateau o curva crescente (Metodo del Gomito / Kneedle)
+#         # Operiamo in scala logaritmica per mu
+#         log_mu = np.log10(mu_np + 1e-10)
+        
+#         # Normalizzazione tra 0 e 1 per rendere le distanze geometriche coerenti
+#         w_norm = (W_np - W_np.min()) / (W_np.max() - W_np.min() + 1e-12)
+#         mu_norm = (log_mu - log_mu.min()) / (log_mu.max() - log_mu.min() + 1e-12)
+        
+#         # Vettore che unisce il primo e l'ultimo punto della curva
+#         p1 = np.array([mu_norm[0], w_norm[0]])
+#         p2 = np.array([mu_norm[-1], w_norm[-1]])
+#         line_vec = p2 - p1
+#         line_norm = np.linalg.norm(line_vec)
+        
+#         # Calcolo della distanza di ogni punto dalla retta p1-p2
+#         distances = []
+#         for i in range(len(mu_norm)):
+#             p3 = np.array([mu_norm[i], w_norm[i]])
+#             # Distanza punto-retta tramite prodotto vettoriale 2D
+#             d = np.abs(np.cross(line_vec, p1 - p3)) / line_norm
+#             distances.append(d)
+            
+#         return mu_np[np.argmax(distances)]
+    
+    
+    
+    
+# def select_best_mu_min(mu_grid, W_sum):
+#     """
+#     Seleziona il mu ottimale bilanciando il minimo globale e il punto di gomito.
+#     - Se il minimo è a sinistra ma la pendenza per arrivarci è trascurabile, sceglie il gomito.
+#     - Se il minimo è una valle profonda, lo segue.
+#     """
+#     mu_np = mu_grid.cpu().numpy() if hasattr(mu_grid, 'cpu') else np.array(mu_grid)
+#     W_np = W_sum.cpu().numpy() if hasattr(W_sum, 'cpu') else np.array(W_sum)
+    
+#     # 1. Prepariamo le coordinate normalizzate (scala logaritmica per mu)
+#     log_mu = np.log10(mu_np + 1e-10)
+#     w_norm = (W_np - W_np.min()) / (W_np.max() - W_np.min() + 1e-12)
+#     mu_norm = (log_mu - log_mu.min()) / (log_mu.max() - log_mu.min() + 1e-12)
+    
+#     # 2. Calcolo del vettore "Metodo del Gomito" (Distanza dalla retta corda)
+#     p1 = np.array([mu_norm[0], w_norm[0]])
+#     p2 = np.array([mu_norm[-1], w_norm[-1]])
+#     line_vec = p2 - p1
+#     line_norm = np.linalg.norm(line_vec)
+    
+#     # Calcoliamo la distanza perpendicolare per ogni punto
+#     distances = []
+#     for i in range(len(mu_norm)):
+#         p3 = np.array([mu_norm[i], w_norm[i]])
+#         d = np.abs(np.cross(line_vec, p1 - p3)) / line_norm
+#         distances.append(d)
+    
+#     # 3. IDENTIFICAZIONE DEL PUNTO
+#     # In una curva a "J" (plateau poi salita), il punto a distanza massima 
+#     # dalla corda è esattamente il gomito dove la salita inizia.
+#     # In una curva a "U" (minimo chiaro), il punto a distanza massima 
+#     # coincide quasi perfettamente con il minimo locale.
+    
+#     best_idx = np.argmax(distances)
+    
+#     # Se il punto a distanza massima è troppo vicino all'inizio (estrema sinistra),
+#     # significa che non c'è una salita reale, allora restituiamo il primo punto.
+#     # Altrimenti, il punto a distanza massima è il miglior compromesso "gomito/valle".
+    
+#     return mu_np[best_idx]
+
+
+

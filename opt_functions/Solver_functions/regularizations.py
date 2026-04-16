@@ -105,7 +105,7 @@ def tresholding_3D(x_input, lam, tau):
     x_prox = x_input.clone()
     
     # Applichiamo il thresholding SOLO alla prima colonna (x_1, indice 0)
-    x_prox[:, 0] = tresholding(x_input[:, 0], lam, tau)
+    x_prox[:, 1:2] = tresholding(x_input[:, 1:2], lam, tau)
     
     # La seconda colonna (x_2, indice 1) rimane già uguale grazie al .clone()
     
@@ -157,7 +157,7 @@ class l1Loss(nn.Module):
         return torch.norm(x, p=1)
     
     def forward_3D(self, x):
-        x = x[:,1].unsqueeze(1)
+        x = x[:,1:2]
         
         return torch.norm(x, p=1)
     

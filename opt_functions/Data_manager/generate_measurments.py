@@ -326,6 +326,8 @@ def prepare_ism_data(is_real=False, real_name='convallaria', load_path=None,
                 gr.ShowImg(ground_truth[:, 1].unsqueeze(1).to("cpu"), pxsize*1e-3)
                 gr.ShowDataset(clean_out.cpu(), normalize=True)
                 gr.ShowDataset(clean_in.cpu(), normalize=True)
+                gr.ShowImg(clean_out.sum(0).cpu(), pxsize*1e-3)
+                gr.ShowImg(clean_in.sum(0).cpu(), pxsize*1e-3)
                 gr.ShowDataset(noise_image.cpu(), normalize=True)
         
         else: # 2D

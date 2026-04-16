@@ -48,7 +48,7 @@ hparams = {
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
 opt_sec = '3D' if hparams['IS_3D'] else '2D'
-hparams['real_name'] = '01_tomm20' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
+hparams['real_name'] = '05_convallaria' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -70,8 +70,8 @@ dataset = prepare_ism_data(
 
 ## ALGORITHM
 
-ALGORITHM = "pgd"       # "prox" o "pgd"
-MASK = 'masked_eps'          # 'whole' 'masked' 'masked_eps'
+ALGORITHM = "md"       # "prox" o "pgd"
+MASK = 'masked'          # 'whole' 'masked' 'masked_eps'
 
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
@@ -126,11 +126,12 @@ save_path = f"Results/WP/wp_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.
 print(f"White princ per risultati in: {save_path}")
 
 
-W_sum, psnr_vecs, ssim_vecs, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps_f=5)
+W_sum, psnr_vecs, ssim_vecs, mu_best, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps_f=1)
 
 results = { "W_sum": W_sum,
             "psnr_vecs": psnr_vecs,
             "ssim_vecs": ssim_vecs,
+            "mu_best": mu_best,
             "results_best": results_best,
             "wh_true": wh_true,
             "ground_truth": dataset["ground_truth"]}
@@ -138,7 +139,7 @@ results = { "W_sum": W_sum,
 
 ## SAVE RESULTS
 
-save_path = f"Results/WP/wp_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
+save_path = f"Results/WP/wp_l1_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
 print(f"Salvataggio risultati in: {save_path}")
 
