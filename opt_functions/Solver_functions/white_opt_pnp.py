@@ -284,9 +284,7 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
     
     min_distance = float('inf') 
     
-    # --- 1. SETUP DEL SOLVER ---
-    SolverClass = optim
-    solver = SolverClass(parameters, algorithm = algorithm, is_3d=is_3d, is_realdata = is_realdata)
+
 
     physics = parameters["physics"]
 
@@ -326,9 +324,10 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
     # --- 3. RICERCA SULLA GRIGLIA MU ---
     for i, mu in enumerate(tqdm(mu_values_grid, desc="Searching mu grid (RWP)")):
         print(f"\n--- Testing mu parameter = {mu} ---")
-        
-        parameters['lam'] = mu
-        solver = SolverClass(parameters, algorithm = algorithm, is_3d=is_3d, is_realdata = is_realdata)
+                
+        parameters["sigma"] = sigma
+        tau = 1/L
+        x_result_drunet, KL_vec_drunet, iter_drunet, norm2_drunet = pnp_ism(noise_image, dataset['back_vec'], parameters, device)
 
         results = solver.solve(y=noise_image)
       

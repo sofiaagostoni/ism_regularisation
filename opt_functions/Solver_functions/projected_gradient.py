@@ -39,13 +39,14 @@ class BaseISMSolver:
     Gestisce il ciclo, le metriche e unifica la matematica PGD/PROX.
     Le sottoclassi implementeranno solo il _step() specifico.
     """
-    def __init__(self, parameters, algorithm="pgd", is_3d=False, is_realdata=False):
+    def __init__(self, parameters, algorithm="pgd", is_3d=False, is_realdata=False, cfg_prior = None):
         self.params = parameters
         self.algorithm = algorithm.lower()
         self.is_3d = is_3d
         self.is_realdata = is_realdata
         self.device = parameters["x_init"].device
         self.back = parameters["back"]
+        self.cfg_prior = cfg_prior
         
         self.max_iter = parameters["max_iter"]
         self.lam = parameters["lam"]
@@ -87,19 +88,23 @@ class BaseISMSolver:
                 
                 x_next = x_curr / (1 + tau * x_curr * g_tot)
                 
-                # Loss totale
-                f_y_eval = self.data_fid(y, x_curr, self.physics) + lam * self.prior(x_curr)
-                f_x_next = self.data_fid(y, x_next, self.physics) + lam * self.prior(x_next)
+                if self.cfg_prior == "l1":
+                    f_y_eval = self.data_fid(y, x_curr, self.physics) 
+                    f_x_next = self.data_fid(y, x_next, self.physics) 
+                else:
+                    # Loss totale
+                    f_y_eval = self.data_fid(y, x_curr, self.physics) + lam * self.prior(x_curr)
+                    f_x_next = self.data_fid(y, x_next, self.physics) + lam * self.prior(x_next)
+                    
                 g_for_dot = g_tot
                 
-            elif self.algorithm =='rl':
+            elif self.algorithm =="rl":
                 
                 x_next = (self.physics.A_adjoint( y / (self.physics(x_curr) + self.back.view(25,1,1,1)))) * x_curr
                 x_next = x_next.sum(0).unsqueeze(0)
                 g_for_dot = None
                 f_y_eval = self.data_fid(y, x_curr, self.physics) 
                 f_x_next = self.data_fid(y, x_next, self.physics)
-                
                 
             else:
                 raise ValueError(f"Algoritmo {self.algorithm} non supportato.")
@@ -121,11 +126,16 @@ class BaseISMSolver:
         
         funct = torch.zeros(self.max_iter, device=self.device)
         iter_err = torch.zeros(self.max_iter, device=self.device)
+        # --- All'inizio del metodo o prima del loop ---
+            
+        count_low_err = 0  # Inizializza il contatore
+        patience = 10      # Numero di iterate richieste
         
         if not self.is_realdata:
             diff_fid = torch.zeros(self.max_iter, device=self.device)
             psnr_vec = torch.zeros(self.max_iter, device=self.device)
             ssim_vec = torch.zeros(self.max_iter, device=self.device)
+            norm2_vec = torch.zeros(self.max_iter, device=self.device)
 
         for k in tqdm(range(self.max_iter), desc=f"iter_{self.__class__.__name__}_{self.algorithm.upper()}"):
             
@@ -142,7 +152,7 @@ class BaseISMSolver:
             
             x_prev_err = x_prev[:, 1:2] if self.is_3d else x_prev
             x_next_err = x_next[:, 1:2] if self.is_3d else x_next
-            iter_err[k] = torch.norm(x_prev_err - x_next_err, 'fro') / (torch.norm(x_prev_err, 'fro') + 1e-10)
+            iter_err[k] = torch.norm(x_prev_err - x_next_err, 'fro') / (torch.norm(x_prev_err, 'fro'))
 
             if not self.is_realdata:
                 x_gt = self.params["ground_truth"]
@@ -150,22 +160,47 @@ class BaseISMSolver:
                 x_gt_norm = (x_gt[:, 1:2] if self.is_3d else x_gt) / (x_gt[:, 1:2] if self.is_3d else x_gt).max()
                 x_next_norm = (x_next_err if self.is_3d else x_next) / (x_next_err if self.is_3d else x_next).max()
 
-                diff_fid[k] = self.params["single_data_fid"](x_gt_norm, x_next_norm)
+                diff_fid[k] = self.params["single_data_fid"]((x_gt[:, 1:2] if self.is_3d else x_gt) , (x_next_err if self.is_3d else x_next))
                 psnr_vec[k] = psnr(x_gt_norm, x_next_norm)
                 ssim_vec[k] = ssim(x_gt_norm, x_next_norm)
+                norm2_vec[k] = torch.linalg.norm(x_gt_norm - x_next_norm)
 
-            # --- CONVERGENZA ---
+            # # --- CONVERGENZA ---
             if iter_err[k] < self.tollerance:
                 print(f"Convergence reached at iter = {k}")
                 funct, iter_err = funct[:k], iter_err[:k]
                 if not self.is_realdata:
-                    diff_fid, psnr_vec, ssim_vec = diff_fid[:k], psnr_vec[:k], ssim_vec[:k]
+                    diff_fid, psnr_vec, ssim_vec, norm2_vec = diff_fid[:k], psnr_vec[:k], ssim_vec[:k], norm2_vec[:k]
                 break
+            
+
+
+            # ... dentro il loop delle iterazioni (indice k) ...
+
+            # --- CONTROLLO CONVERGENZA ---
+            # if iter_err[k] < self.tollerance:
+            #     count_low_err += 1
+            # else:
+            #     count_low_err = 0  # Reset se l'errore torna sopra la soglia
+
+            # if count_low_err >= patience:
+            #     print(f"Convergence reached: error below tolerance for {patience} consecutive iterations at iter = {k}")
+                
+            #     # Tagliamo i vettori alla posizione corrente
+            #     # Usiamo k+1 per includere l'ultima iterazione calcolata
+            #     funct, iter_err = funct[:k+1], iter_err[:k+1]
+                
+            #     if not self.is_realdata:
+            #         diff_fid = diff_fid[:k+1]
+            #         psnr_vec = psnr_vec[:k+1]
+            #         ssim_vec = ssim_vec[:k+1]
+            #     break
 
         return {'x_result': state['x_curr'], 'funct': funct, 'iter_err': iter_err,
                 'diff_fid': None if self.is_realdata else diff_fid,
                 'psnr': None if self.is_realdata else psnr_vec,
-                'ssim': None if self.is_realdata else ssim_vec}
+                'ssim': None if self.is_realdata else ssim_vec,
+                'norm2':None if self.is_realdata else norm2_vec}
 
 
 # ==========================================
@@ -196,8 +231,8 @@ class RichLucy(BaseISMSolver):
     
 class Pgd_Backtracking(BaseISMSolver):
     # Aggiungiamo l'init per avere delta, s ed eta come attributi di classe
-    def __init__(self, parameters, algorithm="pgd", is_3d=False, is_realdata=False, s=1.0, eta=2, delta=0.9):
-        super().__init__(parameters, algorithm, is_3d, is_realdata)
+    def __init__(self, parameters, algorithm="pgd", is_3d=False, is_realdata=False, s=1.0, eta=2, delta=0.9, cfg_prior = "l1"):
+        super().__init__(parameters, algorithm, is_3d, is_realdata, cfg_prior)
         self.s = s
         self.eta = eta
         self.delta = delta

@@ -34,11 +34,11 @@ tv= TVLoss()
 
 
 hparams = {
-    'Nz': 2,
+    'Nz': 1,
     'pxsize': 40,
-    'IS_REAL': True,
+    'IS_REAL': False,
     'LOAD_FROM_FILE': True,
-    'flux': 30,
+    'flux': 20,
     'lam': 0.001
 }
 
@@ -89,12 +89,12 @@ sigma = 1e-3
 parameters = {
     "max_iter": 600,
     "tollerance": 1e-12,
-    "Lip_reg": dataset["L_th"]*1e-3, 
+    "Lip_reg": dataset["L_th"]*1e-2, 
     "x_init": x_0,
     "physics": dataset["physics"],
     "back": dataset["back_vec"],
     "sigma": sigma,
-    
+    "ground_truth": dataset["ground_truth"] if hparams['IS_REAL'] else None,
     "data_fid": kl.forward_25_3D if hparams['IS_3D'] else kl.forward_25,
     "grad_data_fid": kl.grad_25_3D if hparams['IS_3D'] else kl.grad_25,
     "single_data_fid": KL_metric if hparams['IS_3D'] else KL_metric,
@@ -117,10 +117,13 @@ def pnp_ism(y, back, parameters_pnp, device):
     L_max  = parameters_pnp["Lip_reg"]      
     pnp   = parameters_pnp["Pnp"]  
     physics   = parameters_pnp["physics"]
+    x_gt = parameters_pnp['ground_truth']
 
     # Sposto tutti i tensori sul device
     funct = torch.zeros(max_iter, device=device)
     iter_err = torch.zeros(max_iter, device=device)
+    norm2 = torch.zeros(max_iter, device=device)
+
     
     min_distance = - float('inf')
 
@@ -137,10 +140,13 @@ def pnp_ism(y, back, parameters_pnp, device):
             x_k_succ = torch.max(x_k_prec -  tau* grad_data_fid(y, x_k_prec,  physics), torch.tensor(0))
             x_k_succ_prepnp = x_k_succ
             x_k_succ = x_k_succ/ x_k_succ.max()
-            x_k_succ[:,1:2] = pnp(x_k_succ[:,1:2], sigma)
+            # x_k_succ[:,1:2] = pnp(x_k_succ[:,1:2], sigma)
+            x_k_succ = pnp(x_k_succ, sigma)
+
             x_k_succ = torch.clamp(x_k_succ, 0, 1)
                 
         funct[k] = data_fid(y, x_k_succ, physics)
+        norm2[k] = torch.norm(x_gt - x_k_succ, 'fro')
         iter_err[k] = torch.norm(x_k_prec - x_k_succ, 'fro') / torch.norm(x_k_prec, 'fro')
 
         
@@ -154,23 +160,25 @@ def pnp_ism(y, back, parameters_pnp, device):
             print(f"Max y: {y.max()}")
             print(f"Max xksucc pre norm : {x_k_succ_prepnp.max()}")
             print(f"Max xksucc post pnp: {x_k_succ.max()}")
-            plot([y.sum(0), x_init, x_k_succ[:,1:2]],
+            plot([y.sum(0), x_init, x_k_succ],
                     cmap = 'hot',
                     rescale_mode = 'clip',
                     suptitle = f"iteration {k}")
+            
+            
         
         if iter_err[k] < tollerance:
             print(f"Convergence reached at iteration = {k}")
             funct = funct[0:k]
             iter_err = iter_err[0:k]
-            
+            norm2 = norm2[0:k]
             # lpips_vec = lpips_vec[0:k] 
             break
 
         x_k_prec = x_k_succ
         
 
-    return x_k_succ, funct.detach(), iter_err.detach()
+    return x_k_succ, funct.detach(), iter_err.detach(), norm2.detach()
 
 
 
@@ -183,17 +191,20 @@ def pnp_ism(y, back, parameters_pnp, device):
 # weights = torch.load("weights_drunet/best_model_checkpoint_drunet.pth", weights_only= False)
 
 # drunet.load_state_dict(weights['model_state_dict'], strict = True)
-
+#
 
 
 # MULTIPLE SIGMA -------------------
-sigma_list = [ 5e-4]
+sigma_list = [ 3e-1, 3e-2, 3e-3, 5e-4]
 # sigma_list = [3e-1]
 
 for sigma in sigma_list:
     parameters['sigma'] = sigma
-    x_result_drunet, KL_vec_drunet, iter_drunet = pnp_ism(noise_image, dataset['back_vec'], parameters, device)
+    x_result_drunet, KL_vec_drunet, iter_drunet, norm2_drunet = pnp_ism(noise_image, dataset['back_vec'], parameters, device)
+    plt.plot(norm2_drunet)
 
+
+#%%
 results = {'x_result': x_result_drunet, 'funct': KL_vec_drunet, 'iter_err': iter_drunet,
                 'diff_fid': None if hparams['IS_REAL'] else diff_fid,
                 'psnr': None if hparams['IS_REAL'] else psnr_vec,
