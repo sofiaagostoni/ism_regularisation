@@ -40,7 +40,7 @@ def plot_met(
 
     if diff_functional is not None:
         plots.append((diff_functional, "KL to Ground Truth",
-                      r"$\mathrm{KL}(x_k,\ x_{\mathrm{GT}})$", "semilogy"))
+                      r"$\mathrm{KL}(\ x_{\mathrm{GT}}, x_k)$", "semilogy"))
 
     if stop_criterion is not None:
         plots.append((stop_criterion, "Stopping Criterion",
@@ -383,7 +383,7 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
             axs[0].semilogx(mu_vals, W, color="tab:blue")
             axs[0].semilogx(mu_best_wp, W[min_idx], 'go')
             axs[0].axvline(mu_best_wp.item(), color="green", linestyle="--")
-            # axs[0].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
+            axs[0].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
             axs[0].yaxis.set_major_formatter(formatter)
             axs[0].set_ylabel("WP")
             axs[0].grid(True)
@@ -392,7 +392,7 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
             axs[1].semilogx(mu_vals, psnr, color="tab:orange")
             axs[1].semilogx(mu_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
             axs[1].axvline(mu_vals[max_idx_psnr].item(), color="red", linestyle="--")
-            # axs[1].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
+            axs[1].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
             axs[1].set_ylabel("PSNR (dB)")
             axs[1].grid(True)
 
@@ -400,7 +400,7 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
             axs[2].semilogx(mu_vals, ssim, color="tab:green")
             axs[2].semilogx(mu_vals[max_idx_ssim], ssim[max_idx_ssim], 'go')
             axs[2].axvline(mu_vals[max_idx_ssim].item(), color="green", linestyle="--")
-            # axs[2].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
+            axs[2].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
 
             axs[2].set_ylabel("SSIM")
             axs[2].set_xlabel("$\mu$")

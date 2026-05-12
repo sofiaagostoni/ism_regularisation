@@ -26,9 +26,11 @@ dtype = torch.float32
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 mu_values_grid = torch.concat(
-    [torch.tensor([0, 1e-8]), torch.linspace(1e-5, 1e-1, steps=100)],
+    [torch.tensor([0, 1e-8]), torch.linspace(1e-5, 1, steps=150)],
     dim=0
-).to(device)
+    ).to(device)
+
+
 
 MASK = 'masked'
 
@@ -47,7 +49,7 @@ def run_experiment(real_name, nz, algorithm, MASK):
 
     
     os.makedirs("Results/WP", exist_ok=True) # Assicura che la cartella esista
-    save_path = f"Results/WP/wp_{opt_sec}_{algorithm}_{MASK}_{real_name}.pth"
+    save_path = f"Results/WP/wp_newgrid_{opt_sec}_{algorithm}_{MASK}_{real_name}.pth"
 
     # if os.path.exists(save_path):
     #     print(f"\n[SKIP] L'esperimento {real_name} | Nz={nz} | Algo={algorithm} è già completato. File: {save_path}")
@@ -118,7 +120,7 @@ def run_experiment(real_name, nz, algorithm, MASK):
         
     parameters = {
         "max_iter": 10000,
-        "tollerance": 1e-10,
+        "tollerance": 1e-6,
         "Lip_reg": dataset["L_th"], 
         "x_init": dataset["x_init"],
         "physics": dataset["physics"],
@@ -181,7 +183,7 @@ if __name__ == "__main__":
     
     
     nz_list = [2]
-    algorithms_list = ["pgd", "md"]
+    algorithms_list = ["pgd", "prox", "md"]
 
     # Genera tutte le combinazioni (8 * 2 * 2 = 32 esperimenti)
     experiments = list(itertools.product(datasets_list, nz_list, algorithms_list))

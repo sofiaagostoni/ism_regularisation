@@ -27,7 +27,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 mu_values_grid = torch.concat(
-    [torch.tensor([0, 1e-8]), torch.linspace(1e-5, 1e-1, steps=100)],
+    [torch.tensor([0, 1e-8]), torch.linspace(1e-5, 1, steps=150)],
     dim=0
     )
 
@@ -48,7 +48,7 @@ hparams = {
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
 opt_sec = '3D' if hparams['IS_3D'] else '2D'
-hparams['real_name'] = '05_convallaria' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
+hparams['real_name'] = '04_tomm20' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -90,10 +90,10 @@ CONFIG_REG = {
         "prox": (tresholding_3D, tresholding)
     },
     "md": {
-        "prior": (l1.forward_3D, l1.forward),
-        # "prior": (tv.forward_3D, tv.forward),
-        # "prior_grad": (tv.grad_3D, tv.grad),
-        "prior_grad": (l1.grad, l1.grad),
+        # "prior": (l1.forward_3D, l1.forward),
+        "prior": (tv.forward_3D, tv.forward),
+        "prior_grad": (tv.grad_3D, tv.grad),
+        # "prior_grad": (l1.grad, l1.grad),
         "prox": (None, None)
     },
 }
@@ -103,8 +103,8 @@ cfg = CONFIG_REG[ALGORITHM]
     
     
 parameters = {
-    "max_iter": 10000,
-    "tollerance": 1e-12,
+    "max_iter": 5000,
+    "tollerance": 1e-7,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
@@ -121,9 +121,8 @@ parameters = {
     "prior_grad": cfg["prior_grad"][idx]
 }
 
-save_path = f"Results/WP/wp_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
+# save_path = f"Results/WP/wp_l1_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
-print(f"White princ per risultati in: {save_path}")
 
 
 W_sum, psnr_vecs, ssim_vecs, mu_best, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps_f=1)
@@ -139,7 +138,7 @@ results = { "W_sum": W_sum,
 
 ## SAVE RESULTS
 
-save_path = f"Results/WP/wp_l1_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
+save_path = f"Results/WP/wp_newgrid_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
 print(f"Salvataggio risultati in: {save_path}")
 

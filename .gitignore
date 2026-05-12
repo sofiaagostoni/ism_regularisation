@@ -157,7 +157,8 @@ venv.bak/
 *.h5
 *.pth
 *.pt
-
+*.pdf
+*.eps
 # mkdocs documentation
 /site
 

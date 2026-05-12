@@ -164,6 +164,10 @@ class l1Loss(nn.Module):
     def grad(self,x):
 
         return torch.ones_like(x)
+    
+    def grad_3D(self,x):
+        x = x[:,1:2]
+        return torch.ones_like(x)
 
 
 
