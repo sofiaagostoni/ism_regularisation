@@ -159,6 +159,10 @@ venv.bak/
 *.pt
 *.pdf
 *.eps
+*.json
+*.wandb
+*.yaml
+*.txt
 # mkdocs documentation
 /site
 
