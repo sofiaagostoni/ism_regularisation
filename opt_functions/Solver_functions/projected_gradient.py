@@ -9,6 +9,7 @@ from skimage.metrics import structural_similarity
 import torch
 import math
 from tqdm import tqdm
+from .white_opt_princ import compute_whiteness
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -56,6 +57,10 @@ class BaseISMSolver:
         self.data_fid = parameters["data_fid"]
         self.grad_data_fid = parameters["grad_data_fid"]
         self.prior = parameters["prior"]
+        
+        # --- NUOVO: Callback e intervallo ---
+        self.callback = parameters.get("callback", None)
+        self.log_interval = parameters.get("log_interval", 100) # Default: log ogni 100 iterazioni
 
 
 
@@ -136,6 +141,7 @@ class BaseISMSolver:
             psnr_vec = torch.zeros(self.max_iter, device=self.device)
             ssim_vec = torch.zeros(self.max_iter, device=self.device)
             norm2_vec = torch.zeros(self.max_iter, device=self.device)
+            whiteness = torch.zeros(self.max_iter, device=self.device)
 
         for k in tqdm(range(self.max_iter), desc=f"iter_{self.__class__.__name__}_{self.algorithm.upper()}"):
             
@@ -164,13 +170,35 @@ class BaseISMSolver:
                 psnr_vec[k] = psnr(x_gt_norm, x_next_norm)
                 ssim_vec[k] = ssim(x_gt_norm, x_next_norm)
                 norm2_vec[k] = torch.linalg.norm(x_gt_norm - x_next_norm)
+                whiteness[k] = compute_whiteness(x_next, y, self.physics, self.back, self.is_3d, mask_type = 'masked')
+                
+            # --- NUOVO: CHIAMATA AL CALLBACK WANDB ---
+            if self.callback is not None and (k % self.log_interval == 0 or k == self.max_iter - 1):
+                # Raccogliamo le metriche correnti in un dizionario
+                current_metrics = {
+                    "Functional": funct[k].item(),
+                    "Iter_Error": iter_err[k].item(),
+                }
+                if not self.is_realdata:
+                    current_metrics["PSNR"] = psnr_vec[k].item()
+                    current_metrics["SSIM"] = ssim_vec[k].item()
+                    current_metrics['NORM2'] = norm2_vec[k].item()
+                    current_metrics['KL_METRIC'] = diff_fid[k].item()
+                    current_metrics['WHITENESS'] = whiteness[k].item()
+
+                
+                # Chiamiamo la funzione esterna passandole cosa serve
+                self.callback(iteration=k, x_curr=state['x_curr'], metrics=current_metrics)
 
             # # --- CONVERGENZA ---
             if iter_err[k] < self.tollerance:
                 print(f"Convergence reached at iter = {k}")
                 funct, iter_err = funct[:k], iter_err[:k]
                 if not self.is_realdata:
-                    diff_fid, psnr_vec, ssim_vec, norm2_vec = diff_fid[:k], psnr_vec[:k], ssim_vec[:k], norm2_vec[:k]
+                    diff_fid, psnr_vec, ssim_vec, norm2_vec, whiteness = diff_fid[:k], psnr_vec[:k], ssim_vec[:k], norm2_vec[:k], whiteness[:k]
+                # Forza un ultimo log alla convergenza se non è già stato fatto
+                if self.callback is not None and k % self.log_interval != 0:
+                    self.callback(iteration=k, x_curr=state['x_curr'], metrics=current_metrics)
                 break
             
 

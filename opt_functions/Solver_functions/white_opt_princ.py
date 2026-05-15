@@ -257,7 +257,7 @@ def find_knee_point(mu_values, W_sum):
     return mu_values[best_idx]
 
 
-def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
+def RWP(dataset, parameters, hparams, optim,
         algorithm="pgd", mask_type="masked", eps_f=0):
     """
     Calcola il Residual Whiteness Principle (RWP) per una griglia di parametri mu (lambda).
@@ -387,106 +387,130 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
 
     return W_sum, psnr_vecs, ssim_vecs, mu_best, best_results, wh_true
 
-
-def RWP_Adam_1Step(dataset, parameters, hparams, optim=Pgd_Backtracking,
-                   algorithm="pgd", mask_type="masked", eps=1, max_outer_iter=100, lrate = 5e-3, stepsize = 20, gamma = 0.5):
+def compute_whiteness(x_curr, noise_image, physics, back_vec, is_3d, mask_type = 'masked'):
+        
+    lambda_d = physics(x_curr) + back_vec.view(-1, 1, 1, 1)
+    if is_3d :
+        lambda_d = lambda_d.sum(1).unsqueeze(1)
     
-    noise_image = dataset["noise_image"]
-    back_vec = dataset["back_vec"]
-    is_3d = hparams['IS_3D']
-    is_realdata = hparams['IS_REAL']
-    device = noise_image.device
-    M = noise_image.numel() 
+    # Calcolo di Z per il risultato corrente
+    if mask_type == "masked":
+        Z = standardize_unbiased_masked(noise_image, lambda_d) 
+    elif mask_type == "masked_eps":
+        # x1 = x_curr[:,0:1]
+        # # x1_masked = x1[x1 != 0]
+        # eps = x1.mean() if is_3d else eps_f
+        Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps = 1-5)
+    elif mask_type == "whole":
+        Z = standardize(noise_image, lambda_d)
+    else:
+        raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
+        
+    # Metriche Whiteness
+    wh, M_eff = whiteness_measure(Z, mode="highpass", cutoff_ratio=0.10)
+    W_sum = M_eff * wh
     
-    physics = parameters["physics"]
-    SolverClass = optim
+    return W_sum
 
-    # 1. PARAMETRO DA OTTIMIZZARE
-    mu_raw = torch.tensor([0.001], dtype=torch.float32, device=device, requires_grad=True)
-    optimizer = torch.optim.Adam([mu_raw], lr=lrate)
-    scheduler = StepLR(optimizer, step_size=stepsize, gamma= gamma)
-
-    best_rwp = float('inf')
-    best_mu = None
+# def RWP_Adam_1Step(dataset, parameters, hparams, optim=Pgd_Backtracking,
+#                    algorithm="pgd", mask_type="masked", eps=1, max_outer_iter=100, lrate = 5e-3, stepsize = 20, gamma = 0.5):
     
-    RWP_vec = torch.empty(max_outer_iter, device=device)  
+#     noise_image = dataset["noise_image"]
+#     back_vec = dataset["back_vec"]
+#     is_3d = hparams['IS_3D']
+#     is_realdata = hparams['IS_REAL']
+#     device = noise_image.device
+#     M = noise_image.numel() 
     
-    # Inizializzazione del punto di partenza per il "warm start"
-    x_0 = parameters["x_init"].clone()
+#     physics = parameters["physics"]
+#     SolverClass = optim
+
+#     # 1. PARAMETRO DA OTTIMIZZARE
+#     mu_raw = torch.tensor([0.001], dtype=torch.float32, device=device, requires_grad=True)
+#     optimizer = torch.optim.Adam([mu_raw], lr=lrate)
+#     scheduler = StepLR(optimizer, step_size=stepsize, gamma= gamma)
+
+#     best_rwp = float('inf')
+#     best_mu = None
+    
+#     RWP_vec = torch.empty(max_outer_iter, device=device)  
+    
+#     # Inizializzazione del punto di partenza per il "warm start"
+#     x_0 = parameters["x_init"].clone()
     
 
-    print("\n--- Inizio Ottimizzazione di mu tramite Adam (1-Step Unrolling) ---")
+#     print("\n--- Inizio Ottimizzazione di mu tramite Adam (1-Step Unrolling) ---")
 
-    for outer_idx in range(max_outer_iter):
-        optimizer.zero_grad()
-        mu = 0.1 * torch.sigmoid(mu_raw)
+#     for outer_idx in range(max_outer_iter):
+#         optimizer.zero_grad()
+#         mu = 0.1 * torch.sigmoid(mu_raw)
                 
-        # ==========================================================
-        # FASE 1: CONVERGENZA SENZA GRADIENTE (Risparmio Memoria)
-        # ==========================================================
-        with torch.no_grad():
-            # Impostiamo lam disconnesso dal grafo per questa fase
-            parameters['lam'] = mu.item() 
-            parameters['x_init'] = x_0
+#         # ==========================================================
+#         # FASE 1: CONVERGENZA SENZA GRADIENTE (Risparmio Memoria)
+#         # ==========================================================
+#         with torch.no_grad():
+#             # Impostiamo lam disconnesso dal grafo per questa fase
+#             parameters['lam'] = mu.item() 
+#             parameters['x_init'] = x_0
             
-            if outer_idx < 100:
-                parameters['max_iter'] = 1000  # Numero di iterazioni per arrivare a convergenza
-            else:
-                parameters['max_iter'] = 10000
-            solver_no_grad = SolverClass(parameters, algorithm=algorithm, is_3d=is_3d, is_realdata=is_realdata)
-            results_no_grad = solver_no_grad.solve(y=noise_image)
+#             if outer_idx < 100:
+#                 parameters['max_iter'] = 1000  # Numero di iterazioni per arrivare a convergenza
+#             else:
+#                 parameters['max_iter'] = 10000
+#             solver_no_grad = SolverClass(parameters, algorithm=algorithm, is_3d=is_3d, is_realdata=is_realdata)
+#             results_no_grad = solver_no_grad.solve(y=noise_image)
             
-            # x a convergenza (staccato dal grafo)
-            x_converged = results_no_grad['x_result'].detach()
+#             # x a convergenza (staccato dal grafo)
+#             x_converged = results_no_grad['x_curr'].detach()
             
-        # ==========================================================
-        # FASE 2: 1 SINGOLA ITERAZIONE CON GRADIENTE
-        # ==========================================================
-        # Qui passiamo il tensore `mu` (che ha requires_grad=True)
-        parameters['lam'] = mu 
-        parameters['x_init'] = x_converged # Partiamo esattamente dal punto di convergenza
-        parameters['max_iter'] = 1         # SOLO 1 ITERAZIONE per tenere traccia del grafo
+#         # ==========================================================
+#         # FASE 2: 1 SINGOLA ITERAZIONE CON GRADIENTE
+#         # ==========================================================
+#         # Qui passiamo il tensore `mu` (che ha requires_grad=True)
+#         parameters['lam'] = mu 
+#         parameters['x_init'] = x_converged # Partiamo esattamente dal punto di convergenza
+#         parameters['max_iter'] = 1         # SOLO 1 ITERAZIONE per tenere traccia del grafo
         
-        solver_grad = SolverClass(parameters, algorithm=algorithm, is_3d=is_3d, is_realdata=is_realdata)
+#         solver_grad = SolverClass(parameters, algorithm=algorithm, is_3d=is_3d, is_realdata=is_realdata)
         
-        # Questo solve farà 1 solo step, costruendo un grafo leggerissimo
-        results_grad = solver_grad.solve(y=noise_image)
-        x_final = results_grad['x_result']
+#         # Questo solve farà 1 solo step, costruendo un grafo leggerissimo
+#         results_grad = solver_grad.solve(y=noise_image)
+#         x_final = results_grad['x_result']
         
-        # ==========================================================
-        # FASE 3: CALCOLO LOSS RWP E BACKPROPAGATION
-        # ==========================================================
-        lambda_d = physics(x_final) + back_vec.view(-1, 1, 1, 1)
-        if is_3d:
-            lambda_d = lambda_d.sum(1).unsqueeze(1)
+#         # ==========================================================
+#         # FASE 3: CALCOLO LOSS RWP E BACKPROPAGATION
+#         # ==========================================================
+#         lambda_d = physics(x_final) + back_vec.view(-1, 1, 1, 1)
+#         if is_3d:
+#             lambda_d = lambda_d.sum(1).unsqueeze(1)
         
-        if mask_type == "masked":
-            Z = standardize_unbiased_masked(noise_image, lambda_d)
-        elif mask_type == "masked_eps":
-            Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps)
-        elif mask_type == "whole":
-            Z = standardize(noise_image, lambda_d)
+#         if mask_type == "masked":
+#             Z = standardize_unbiased_masked(noise_image, lambda_d)
+#         elif mask_type == "masked_eps":
+#             Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps)
+#         elif mask_type == "whole":
+#             Z = standardize(noise_image, lambda_d)
         
-        # Calcolo RWP e moltiplicazione per M
-        loss_rwp = whiteness_measure(Z) * M
+#         # Calcolo RWP e moltiplicazione per M
+#         loss_rwp = whiteness_measure(Z) * M
         
-        # Backpropagation attraverso l'unica iterazione
-        loss_rwp.backward()
-        optimizer.step()
-        scheduler.step()
+#         # Backpropagation attraverso l'unica iterazione
+#         loss_rwp.backward()
+#         optimizer.step()
+#         scheduler.step()
         
-        if loss_rwp.item() < best_rwp:
-            best_rwp = loss_rwp.item()
-            best_mu = mu.item()
-            best_results = results_no_grad
+#         if loss_rwp.item() < best_rwp:
+#             best_rwp = loss_rwp.item()
+#             best_mu = mu.item()
+#             best_results = results_no_grad
 
-        if outer_idx % 5 == 0:
-            print(f"Iter {outer_idx:03d} | mu: {mu.item():.6f} | RWP: {loss_rwp.item():.4f}")
+#         if outer_idx % 5 == 0:
+#             print(f"Iter {outer_idx:03d} | mu: {mu.item():.6f} | RWP: {loss_rwp.item():.4f}")
             
-        RWP_vec[outer_idx] = loss_rwp.item()
+#         RWP_vec[outer_idx] = loss_rwp.item()
 
-    print(f"\nOttimizzazione completata. Miglior mu trovato: {best_mu:.6f} con RWP = {best_rwp:.4f}")
-    return best_mu, best_rwp, RWP_vec, best_results
+#     print(f"\nOttimizzazione completata. Miglior mu trovato: {best_mu:.6f} con RWP = {best_rwp:.4f}")
+#     return best_mu, best_rwp, RWP_vec, best_results
 
 
 
