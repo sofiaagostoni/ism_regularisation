@@ -63,6 +63,8 @@ dataset = prepare_ism_data(
     show_plots = True
 )
 
+#%%
+
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
 l1 = l1Loss()
@@ -118,7 +120,11 @@ def wandb_callback(iteration, x_curr, metrics):
     Questa funzione verrà chiamata dal solver ogni 'log_interval' iterazioni.
     """
     # 1. Prepariamo il dizionario base con le metriche
+    soglia = 0.05
     log_dict = metrics.copy()
+    # exp_map = exponential_similarity_map(x/x.max(), x_curr,alpha=5.0)
+    # jacc_error_map = binary_error_map(x_curr, x/x.max(), threshold=soglia)
+    # local_jaccard_map = local_binary_jaccard_map(x_curr, x/x.max(), threshold=soglia)
     
     # 2. Estraiamo l'immagine per la visualizzazione
     # Gestiamo la differenza tra 2D e 3D: prendiamo sempre la slice centrale se è 3D
@@ -137,6 +143,16 @@ def wandb_callback(iteration, x_curr, metrics):
     
     # 4. Spediamo tutto a wandb usando lo step corretto
     wandb.log(log_dict, step=iteration)
+    # wandb.log({ 
+    #         "Expmap": colorbar_for_image(exp_map, cmap = 'viridis', 
+    #                                         caption = "Expmap"),
+    #         "Jaccard_Error_Map": wandb.Image(jacc_error_map.cpu(), 
+    #                                          caption="White: OK (tp) | Red: Extra (fp) | Blue: Missing (fn) | Black: OK (tn)"),
+    #         "Local_Jaccard_binary": colorbar_for_image(local_jaccard_map.cpu(), cmap = 'viridis', 
+    #                                                    caption="local_Jaccard")
+        
+    #         }, step = iteration)
+
     
     # Puliamo la memoria
     plt.close(fig)
@@ -218,7 +234,6 @@ execution_time = end_time - start_time
 print(f"Tempo di esecuzione per {hparams['real_name']} con {ALGORITHM}: {execution_time:.4f} secondi")
 
 reconstructed_img = results['x_result']
-
 
 
 ## SAVING DATA

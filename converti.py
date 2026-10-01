@@ -43,3 +43,6 @@ def batch_convert_eps_to_pdf(input_folder_name):
 # Esecuzione
 if __name__ == "__main__":
     batch_convert_eps_to_pdf("Images_eps")
+    
+    
+    

@@ -154,7 +154,7 @@ sweep_config = {
     'parameters': {
         'lam': {
             # Inserisci qui tutti i valori di lambda che vuoi testare
-            'values': torch.linspace(1e-8, 1, steps=150).tolist()
+            'values': torch.linspace(1e-5, 1, steps=150).tolist()
         }
     }
 }
@@ -172,7 +172,7 @@ def run_experiment():
         
         # 1. RECUPERA IL LAMBDA DINAMICO
         lam = wandb.config.lam 
-        ALGORITHM = 'prox' 
+        ALGORITHM = 'pgd' 
         cfg = CONFIG_REG[ALGORITHM]
         
         # Aggiorniamo hparams localmente per il salvataggio

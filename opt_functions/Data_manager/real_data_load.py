@@ -21,7 +21,7 @@ from s2ism import  s2ism  as amd
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-def save_fromh5_totorch(path, file, Nz, name, exwl, emwl):
+def save_fromh5_totorch(path, file, Nz, name, exwl, emwl, na):
         
         # path = r'Data_results/Real_data'       #es: \\iitfsvge101.iit.local\mms\Data MMS server\STED-ISM\AxialDeconvolution\Convallaria\C
 
@@ -31,19 +31,20 @@ def save_fromh5_totorch(path, file, Nz, name, exwl, emwl):
 
         # name = "08_tubulin"
         
-        dset, PSF, meta = load_real_data(path, file, Nz)
+        dset, PSF, meta = load_real_data(path, file, Nz, exwl, emwl, na)
 
         data = {
         "measurment": dset,
         "PSF": PSF,
         "metadati": meta,
         "exwl": exwl,
-        "emwl": emwl
+        "emwl": emwl,
+        "na": na
         }
 
         torch.save(data, f'Data/Real_data/{name}_data.pth')
 
-def load_real_data(path, file, Nz):
+def load_real_data(path, file, Nz, exwl, emwl, na):
 
     # Configurazione Grafica
     # plt.rcParams.update({'ps.fonttype': 42, 'pdf.fonttype': 42, 
@@ -68,11 +69,12 @@ def load_real_data(path, file, Nz):
     # Generazione immagini standard (Closed/Open Pinhole)
     
     exPar = sim.simSettings()
-    exPar.wl = 488
+    exPar.wl = exwl
     exPar.mask_sampl = 101
+    exPar.na = na
 
     emPar = exPar.copy()
-    emPar.wl = 520
+    emPar.wl = emwl
     Nx = meta.nx
     Ny = meta.ny
 
@@ -80,6 +82,12 @@ def load_real_data(path, file, Nz):
     grid.pxsizex = meta.dx*1e3
 
     grid.Nz = Nz
+    
+    # opt_out_of_focus_plane, psf_stack = est.find_out_of_focus_from_param(grid.pxsizex, exPar, emPar, mode='Pearson', stack='positive', graph=True)
+    # grid.pxsizez = opt_out_of_focus_plane # 700 #nm for out-of-focus
+    # grid.Nz = 2
+
+    # psf_ism, _, _ = est.psf_estimator_from_data(dset, exPar, emPar, grid)
 
     PSF, detPSF, exPSF = est.psf_estimator_from_data(dset, exPar, emPar, grid, z_out_of_focus = "ToFind", check_alignment = True)
     spad_size = grid.spad_size() / emPar.airy_unit

@@ -174,19 +174,20 @@ def standardize_unbiased_masked_eps(Y, lam, eps):
 #     return numerator / denominator
 
 
-def whiteness_measure(Z: torch.Tensor, mode="standard", cutoff_ratio=0.10):
+def whiteness_measure(Z: torch.Tensor, mode="standard", cutoff=0.10):
     """
     Calcola W(Z) nel dominio delle frequenze.
     
     Parametri:
     - Z: tensor 3D (m1, m2, m3), il residuo standardizzato.
     - mode: "standard" (tutte le frequenze) o "highpass" (ignora le basse frequenze).
-    - cutoff_ratio: percentuale della dimensione del tensore da azzerare al centro (es. 0.10 = 10%).
+    - cutoff: percentuale della dimensione del tensore da azzerare al centro (es. 0.10 = 10%).
     
     Ritorna: 
     - wh: il valore grezzo del rapporto del Whiteness Principle.
     - M_eff: il numero di frequenze effettivamente utilizzate (serve per la normalizzazione).
     """
+    print(Z.shape)
     if Z.ndim != 3:
         Z = Z.squeeze()
         if Z.ndim != 3:
@@ -212,10 +213,10 @@ def whiteness_measure(Z: torch.Tensor, mode="standard", cutoff_ratio=0.10):
         c0, c1, c2 = s0 // 2, s1 // 2, s2 // 2
         
         # Calcoliamo quanti pixel tagliare a destra e sinistra del centro
-        # (se cutoff_ratio è 0.1, tagliamo +/- 5% dal centro)
-        r0 = max(1, int(s0 * cutoff_ratio / 2))
-        r1 = max(1, int(s1 * cutoff_ratio / 2))
-        r2 = max(1, int(s2 * cutoff_ratio / 2))
+        # (se cutoff è 0.1, tagliamo +/- 5% dal centro)
+        r0 = max(1, int(s0 * cutoff / 2))
+        r1 = max(1, int(s1 * cutoff / 2))
+        r2 = max(1, int(s2 * cutoff / 2))
         
         # Azzera il blocco centrale (cioè cancella le basse frequenze)
         mag_sq[c0-r0:c0+r0, c1-r1:c1+r1, c2-r2:c2+r2] = 0.0
@@ -258,7 +259,7 @@ def find_knee_point(mu_values, W_sum):
 
 
 def RWP(dataset, parameters, hparams, optim,
-        algorithm="pgd", mask_type="masked", eps_f=0):
+        algorithm="pgd", mask_type="masked", cutoff=0.1):
     """
     Calcola il Residual Whiteness Principle (RWP) per una griglia di parametri mu (lambda).
     Sfrutta le classi OOP (PGDSolver, ProxSolver) per massima efficienza e pulizia.
@@ -311,16 +312,16 @@ def RWP(dataset, parameters, hparams, optim,
                 eps = torch.quantile(noise_image.float(), 0.15).item() 
                 print(f"Epsilon value for 3d is {eps}")
             else:
-                eps = eps_f
+                eps = 1
                 print(f"Epsilon value for 2d is {eps}")
 
-            Z_true = standardize_unbiased_masked_eps(noise_image, clean_image_proc, eps_f)
+            Z_true = standardize_unbiased_masked_eps(noise_image, clean_image_proc)
         elif mask_type == "whole":
             Z_true = standardize(noise_image, clean_image_proc)
         else:
             raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
-
-        wh_true, M_eff = whiteness_measure(Z_true, mode="highpass", cutoff_ratio=0.10)
+        wh_mode = "highpass" if is_3d else "standard"
+        wh_true, M_eff = whiteness_measure(Z_true, mode=wh_mode, cutoff=0.60)
         
 
     # --- 3. RICERCA SULLA GRIGLIA MU ---
@@ -348,6 +349,8 @@ def RWP(dataset, parameters, hparams, optim,
         # Calcolo di Z per il risultato corrente
         if mask_type == "masked":
             Z = standardize_unbiased_masked(noise_image, lambda_d) 
+            Z_mean = torch.mean(Z)
+            # Z = Z - Z_mean 
         elif mask_type == "masked_eps":
             # x1 = x_result[:,0:1]
             # # x1_masked = x1[x1 != 0]
@@ -359,7 +362,8 @@ def RWP(dataset, parameters, hparams, optim,
             raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
             
         # Metriche Whiteness
-        wh, M_eff = whiteness_measure(Z, mode="highpass", cutoff_ratio=0.10)
+        wh_mode = "highpass" if is_3d else "standard"
+        wh, M_eff = whiteness_measure(Z, mode=wh_mode, cutoff=cutoff)
         W_sum[i] = M_eff * wh
         
         # Metriche PSNR/SSIM (solo se non siamo con dati reali)
@@ -387,7 +391,7 @@ def RWP(dataset, parameters, hparams, optim,
 
     return W_sum, psnr_vecs, ssim_vecs, mu_best, best_results, wh_true
 
-def compute_whiteness(x_curr, noise_image, physics, back_vec, is_3d, mask_type = 'masked'):
+def compute_whiteness(x_curr, noise_image,  physics, back_vec, is_3d, mask_type = 'masked'):
         
     lambda_d = physics(x_curr) + back_vec.view(-1, 1, 1, 1)
     if is_3d :
@@ -396,21 +400,24 @@ def compute_whiteness(x_curr, noise_image, physics, back_vec, is_3d, mask_type =
     # Calcolo di Z per il risultato corrente
     if mask_type == "masked":
         Z = standardize_unbiased_masked(noise_image, lambda_d) 
+        Z_mean = torch.mean(Z)
     elif mask_type == "masked_eps":
-        # x1 = x_curr[:,0:1]
+        # x1 = x_curr[:,0:1] 
         # # x1_masked = x1[x1 != 0]
         # eps = x1.mean() if is_3d else eps_f
         Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps = 1-5)
+        Z_mean = torch.mean(Z)
     elif mask_type == "whole":
         Z = standardize(noise_image, lambda_d)
+        Z_mean = torch.mean(Z)
     else:
         raise ValueError(f"Metodo di masking non riconosciuto: {mask_type}")
-        
+    
     # Metriche Whiteness
-    wh, M_eff = whiteness_measure(Z, mode="highpass", cutoff_ratio=0.10)
+    wh, M_eff = whiteness_measure(Z, mode="highpass", cutoff=0.10)
     W_sum = M_eff * wh
     
-    return W_sum
+    return W_sum, Z_mean
 
 # def RWP_Adam_1Step(dataset, parameters, hparams, optim=Pgd_Backtracking,
 #                    algorithm="pgd", mask_type="masked", eps=1, max_outer_iter=100, lrate = 5e-3, stepsize = 20, gamma = 0.5):

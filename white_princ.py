@@ -26,21 +26,23 @@ dtype = torch.float32
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-mu_values_grid = torch.concat(
-    [torch.tensor([0, 1e-8]), torch.linspace(1e-5, 1, steps=150)],
-    dim=0
-    )
+# mu_values_grid = torch.concat(
+#     [torch.linspace(1e-5, 1e-1, steps=50)],
+#     dim=0
+#     )
+
+mu_values_grid = torch.logspace(start=-5, end=0, steps=50, device='cuda:0')
 
 mu_values_grid = mu_values_grid.to(device)
 
 ## HYPER PARAM SETTING
 
 hparams = {
-    'Nz': 2,
+    'Nz': 1,
     'pxsize': 40,
     'IS_REAL': False,
     'LOAD_FROM_FILE': True,
-    'flux': 20,
+    'flux': 40,
     'lam': 0.001,
     'mu_grid': mu_values_grid
 }
@@ -48,7 +50,7 @@ hparams = {
 # Aggiunta dei parametri dipendenti
 hparams['IS_3D'] = (hparams['Nz'] > 1)
 opt_sec = '3D' if hparams['IS_3D'] else '2D'
-hparams['real_name'] = '04_tomm20' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
+hparams['real_name'] = '03_H3' if hparams['IS_REAL'] else 'tubulin'                                # '06_convallaria' '05_convallaria' '07_tubulin' '08_tubulin'
 hparams['path'] = 'Data/Simul_data/tub_3D.pth' if hparams['IS_3D'] else 'Data/Simul_data/tub_level.pth'
 
 
@@ -67,10 +69,36 @@ dataset = prepare_ism_data(
     show_plots = True
 )
 
+# def radial_otf_cutoff(psf, rel_thresh=0.05):
+#     """
+#     psf: tensore 2D (H,W) — es. PSF out-of-focus mediata sugli elementi
+#     Ritorna il raggio di cutoff in frequenza (in pixel-frequency)
+#     dove l'OTF radiale scende sotto rel_thresh * picco.
+#     """
+#     otf = torch.fft.fftshift(torch.fft.fft2(psf)).abs()
+#     otf = otf / otf.max()
+#     H, W = otf.shape
+#     cy, cx = H // 2, W // 2
+#     yy, xx = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+#     r = torch.sqrt((yy - cy).float()**2 + (xx - cx).float()**2)
+#     r_int = r.round().long()
+
+#     # profilo radiale medio
+#     nbins = r_int.max().item() + 1
+#     prof = torch.zeros(nbins)
+#     cnt  = torch.zeros(nbins)
+#     prof.index_add_(0, r_int.flatten(), otf.flatten())
+#     cnt.index_add_(0, r_int.flatten(), torch.ones_like(otf.flatten()))
+#     prof = prof / cnt.clamp(min=1)
+
+#     # primo raggio sotto soglia
+#     below = (prof < rel_thresh).nonzero()
+#     return below[0].item() if len(below) else nbins - 1
+
 
 ## ALGORITHM
 
-ALGORITHM = "md"       # "prox" o "pgd"
+ALGORITHM = "pgd"       # "prox" o "pgd"
 MASK = 'masked'          # 'whole' 'masked' 'masked_eps'
 
 kl = KL(back=dataset["back_vec"])
@@ -104,7 +132,7 @@ cfg = CONFIG_REG[ALGORITHM]
     
 parameters = {
     "max_iter": 5000,
-    "tollerance": 1e-7,
+    "tollerance": 1e-5,
     "Lip_reg": dataset["L_th"], 
     "x_init": dataset["x_init"],
     "physics": dataset["physics"],
@@ -125,7 +153,7 @@ parameters = {
 
 
 
-W_sum, psnr_vecs, ssim_vecs, mu_best, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, eps_f=1)
+W_sum, psnr_vecs, ssim_vecs, mu_best, results_best, wh_true = RWP (dataset, parameters, hparams, optim = Pgd_Backtracking ,algorithm= ALGORITHM, mask_type=MASK, cutoff = 0.5)
 
 results = { "W_sum": W_sum,
             "psnr_vecs": psnr_vecs,
@@ -138,7 +166,7 @@ results = { "W_sum": W_sum,
 
 ## SAVE RESULTS
 
-save_path = f"Results/WP/wp_newgrid_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
+save_path = f"Results/WP/wp_newna_0.5_{opt_sec}_{ALGORITHM}_{MASK}_{hparams['real_name']}.pth"
 
 print(f"Salvataggio risultati in: {save_path}")
 

@@ -36,7 +36,7 @@ def plot_met(
 
     if functional is not None:
         plots.append((functional, "KL Convergence",
-                      r"$\mathrm{KL}(A x_k,\ y) + \mu R(x_k)$", "semilogy"))
+                      r"$\mathrm{KL}(A x_k,\ y) + \lambda R(x_k)$", "semilogy"))
 
     if diff_functional is not None:
         plots.append((diff_functional, "KL to Ground Truth",
@@ -88,7 +88,7 @@ def plot_met(
 
 
 
-def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
+def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec, saturated = False):
     
     Nz = 2 if IS_3D else 1
     
@@ -126,8 +126,14 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             ground_truth = dataset["ground_truth"].cpu()
 
             plot([noise_image.sum(0), x_result[:,1:2], x_result[:,0:1] ], cmap = 'hot')
+            
+            vmax =  x_result[:,1:2,:, :].max() 
+            vmin = x_result[:,1:2,:, :].min()  # oppure torch.quantile(img.flatten(), 0.01)
+            
+            if saturated:
+                vmax = torch.quantile(x_result[:,1:2,:, :].flatten(), 0.9999)
 
-            gr.ShowImg(x_result[:,1:2].to("cpu"), grid.pxsizex*1e-3)
+            gr.ShowImg(x_result[:,1:2].to("cpu"), grid.pxsizex*1e-3, vmin = vmin, vmax = vmax)
             gr.ShowImg(x_result[:,0:1].to("cpu"), grid.pxsizex*1e-3)
 
             gr.ShowImg(dataset["ground_truth"][:,1:2].to("cpu"), grid.pxsizex*1e-3)
@@ -141,7 +147,7 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             print(f"SSIM {ssim(ground_truth[:,1:2]/ground_truth[:,1:2].max(), x_result[:,1:2] / x_result[:,1:2].max()).item()}")
             print(f"MICROSSIM {micro_structural_similarity(ground_truth[:,1:2].squeeze().detach().cpu().numpy().astype(np.float32), x_result[:,1:2].squeeze().detach().cpu().numpy().astype(np.float32))}")
             
-            vutils.save_image(x_result[:,1:2], 'percorso/della/cartella/immagine.png')
+            # vutils.save_image(x_result[:,1:2], 'percorso/della/cartella/immagine.png')
 
 
     elif not IS_3D and not IS_REAL:
@@ -149,7 +155,15 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
 
             plot([noise_image.sum(0), x_result], cmap = 'hot')
 
-            gr.ShowImg(x_result.to("cpu"), grid.pxsizex*1e-3)
+            
+            vmax =  x_result.max() 
+            vmin = x_result.min()  # oppure torch.quantile(img.flatten(), 0.01)
+            
+            if saturated:
+                vmax = torch.quantile(x_result.flatten(), 0.9999)
+                
+            gr.ShowImg(x_result.to("cpu"), grid.pxsizex*1e-3,  vmin = vmin, vmax = vmax)
+
 
             gr.ShowImg(noise_image.sum(0).to("cpu"), grid.pxsizex*1e-3)
             gr.ShowImg(noise_image[12:13].to("cpu"), grid.pxsizex*1e-3)
@@ -181,15 +195,22 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             # Creiamo DUE rettangoli identici, uno per ogni subplot
             rect1 = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
             rect2 = patches.Rectangle((y0, x0), dy, dx, linewidth=1, edgecolor='w', facecolor='none')
+            
+            vmax =  x_result[:,1:2,:, :].max() 
+            vmin = x_result[:,1:2,:, :].min()  # oppure torch.quantile(img.flatten(), 0.01)
+            
+            if saturated:
+                vmax = torch.quantile(x_result[:,1:2,:, :].flatten(), 0.9999)
+
 
             # --- Prima Colonna (Destra: [0,1] e [1,1]) ---
-            gr.ShowImg(x_result[:,1:2,:, :], meta.dx, clabel, fig=fig, ax=ax[0,1])
-            gr.ShowImg(x_result[:,1:2,x0:x0+dx, y0:y0+dx], meta.dx, clabel, fig=fig, ax=ax[1,1])
+            gr.ShowImg(x_result[:,1:2,:, :],  meta.dx, clabel, vmin = vmin, vmax = vmax, fig=fig, ax=ax[0,1])
+            gr.ShowImg(x_result[:,1:2,x0:x0+dx, y0:y0+dx], meta.dx, clabel, vmin = vmin, vmax = vmax, fig=fig, ax=ax[1,1])
             ax[0,1].add_patch(rect1) # Aggiungiamo il primo rettangolo
             ax[0,1].set_title("Reconstruction")
 
             # --- Seconda Colonna (Sinistra: [0,0] e [1,0]) ---
-            gr.ShowImg(noise_image[:,:,:, :].sum(0), meta.dx, clabel, fig=fig, ax=ax[0,0])
+            gr.ShowImg(noise_image[:,:,:, :].sum(0), meta.dx, clabel,  fig=fig, ax=ax[0,0])
             gr.ShowImg(noise_image[:,:,x0:x0+dx, y0:y0+dx].sum(0), meta.dx, clabel, fig=fig, ax=ax[1,0])
             ax[0,0].add_patch(rect2) # Aggiungiamo il secondo rettangolo
             ax[0,0].set_title("Noise image sum")
@@ -232,7 +253,7 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             
 
 
-def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_3d = True, title="Metrica", layout="twin", x0 = 100, y0 = 100):
+def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_3d = True, title="Metrica", layout="twin", x0 = 100, y0 = 100, knee = False, saturated = False):
     """
     Plotta i risultati dell'ottimizzazione del parametro mu.
     
@@ -278,42 +299,45 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
         ax1.semilogx(mu_best_wp, W[min_idx], 'go', label = "Minimum")
         
         ax1.yaxis.set_major_formatter(formatter)
-        ax1.set_xlabel("$\mu$")
-        ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+        ax1.set_xlabel("$\lambda$")
+        ax1.set_ylabel("$W(\lambda)$", color="tab:blue")
         ax1.tick_params(axis='y', labelcolor="tab:blue")
         ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
-        ax1.axvline(best_mu_needle.item(), color="red", linestyle="--", alpha=0.7)
-        # ax1.axvline(best_mu_knee.item(), color="orange", linestyle="--", alpha=0.7)
-        # ax1.axvline(best_mu_two.item(), color="black", linestyle="--", alpha=0.7)
-        # ax1.axvline(best_mu_min.item(), color="orange", linestyle="--", alpha=0.7)
         
         
-        # 1. Coordinate degli estremi per la corda
-        x_chord = [mu_vals[1], mu_vals[-1]]
-        y_chord = [W[1], W[-1]]
+        if knee == True:
+            ax1.axvline(best_mu_needle.item(), color="red", linestyle="--", alpha=0.7)
+            # ax1.axvline(best_mu_knee.item(), color="orange", linestyle="--", alpha=0.7)
+            # ax1.axvline(best_mu_two.item(), color="black", linestyle="--", alpha=0.7)
+            # ax1.axvline(best_mu_min.item(), color="orange", linestyle="--", alpha=0.7)
+            
+            
+            # 1. Coordinate degli estremi per la corda
+            x_chord = [mu_vals[1], mu_vals[-1]]
+            y_chord = [W[1], W[-1]]
 
-        # 2. Coordinate del punto di Knee (assumendo tu abbia calcolato best_mu_knee)
-        # Troviamo l'indice del knee point nei dati originali per avere la coordinata Y corretta
-        idx_knee = np.argmin(np.abs(mu_vals - best_mu_needle))
-        y_knee = W[idx_knee]
+            # 2. Coordinate del punto di Knee (assumendo tu abbia calcolato best_mu_knee)
+            # Troviamo l'indice del knee point nei dati originali per avere la coordinata Y corretta
+            idx_knee = np.argmin(np.abs(mu_vals - best_mu_needle))
+            y_knee = W[idx_knee]
 
-        # --- DISEGNO DELLA CORDA ---
-        ax1.plot(x_chord, y_chord, color='gray', linestyle='--', linewidth=1.5, label="Chord")
+            # --- DISEGNO DELLA CORDA ---
+            ax1.plot(x_chord, y_chord, color='gray', linestyle='--', linewidth=1.5, label="Chord")
 
-        # --- DISEGNO DEL TRIANGOLO ---
-        # Creiamo un poligono che unisce: Inizio, Fine e Knee Point
-        triangle_x = [mu_vals[1], mu_vals[-1], best_mu_needle.item()]
-        triangle_y = [W[1], W[-1], y_knee]
+            # --- DISEGNO DEL TRIANGOLO ---
+            # Creiamo un poligono che unisce: Inizio, Fine e Knee Point
+            triangle_x = [mu_vals[1], mu_vals[-1], best_mu_needle.item()]
+            triangle_y = [W[1], W[-1], y_knee]
+            
+            # Usiamo fill per colorare l'area del triangolo (opzionale)
+            ax1.fill(triangle_x, triangle_y, color='orange', alpha=0.2, label="Knee Area")
         
-        # Usiamo fill per colorare l'area del triangolo (opzionale)
-        ax1.fill(triangle_x, triangle_y, color='orange', alpha=0.2, label="Knee Area")
-        
-        # Disegniamo i bordi del triangolo per chiarezza
-        ax1.plot(triangle_x + [triangle_x[0]], triangle_y + [triangle_y[0]], 
-                 color='darkorange', linestyle='-', linewidth=1)
+            # Disegniamo i bordi del triangolo per chiarezza
+            ax1.plot(triangle_x + [triangle_x[0]], triangle_y + [triangle_y[0]], 
+                    color='darkorange', linestyle='-', linewidth=1)
 
-        # Segnamo il Knee Point con un marker specifico
-        ax1.plot(best_mu_needle, y_knee, 'ro', markersize=8, label="Knee Point")
+            # Segnamo il Knee Point con un marker specifico
+            ax1.plot(best_mu_needle, y_knee, 'ro', markersize=8, label="Knee Point")
 
         
         ax1.legend(loc='best')
@@ -346,8 +370,8 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
             ax1.semilogx(mu_vals, W, label="RWP", color="tab:blue")
             ax1.semilogx(mu_best_wp, W[min_idx], 'go')
             ax1.yaxis.set_major_formatter(formatter)
-            ax1.set_xlabel("$\mu$")
-            ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+            ax1.set_xlabel("$\lambda$")
+            ax1.set_ylabel("$W(\lambda)$", color="tab:blue")
             ax1.tick_params(axis='y', labelcolor="tab:blue")
             ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
             # ax1.axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
@@ -403,14 +427,14 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
             axs[2].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
 
             axs[2].set_ylabel("SSIM")
-            axs[2].set_xlabel("$\mu$")
+            axs[2].set_xlabel("$\lambda$")
             axs[2].grid(True)
 
             plt.suptitle(title)
             plt.tight_layout()
             plt.show()
                        
-    plot_results(results_best, dataset, is_real, is_3d, pxsize, x0_sec = x0, y0_sec = y0)
+    plot_results(results_best, dataset, is_real, is_3d, pxsize, x0_sec = x0, y0_sec = y0, saturated = saturated)
     
     
     
@@ -455,8 +479,8 @@ def plot_wp_optim_results(mu_values_grid, results, dataset, pxsize, is_real=Fals
         ax1.plot(mu_best_wp, W[min_idx], 'go')
         
         ax1.yaxis.set_major_formatter(formatter)
-        ax1.set_xlabel("$\mu$")
-        ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+        ax1.set_xlabel("$\lambda$")
+        ax1.set_ylabel("$W(\lambda)$", color="tab:blue")
         ax1.tick_params(axis='y', labelcolor="tab:blue")
         ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
         
@@ -490,8 +514,8 @@ def plot_wp_optim_results(mu_values_grid, results, dataset, pxsize, is_real=Fals
             ax1.plot(mu_vals, W, label="RWP", color="tab:blue")
             ax1.plot(mu_best_wp, W[min_idx], 'go')
             ax1.yaxis.set_major_formatter(formatter)
-            ax1.set_xlabel("$\mu$")
-            ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+            ax1.set_xlabel("$\lambda$")
+            ax1.set_ylabel("$W(\lambda)$", color="tab:blue")
             ax1.tick_params(axis='y', labelcolor="tab:blue")
             ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
 
@@ -536,7 +560,7 @@ def plot_wp_optim_results(mu_values_grid, results, dataset, pxsize, is_real=Fals
             axs[2].plot(mu_vals[max_idx_ssim], ssim[max_idx_ssim], 'go')
             axs[2].axvline(mu_vals[max_idx_ssim].item(), color="green", linestyle="--")
             axs[2].set_ylabel("SSIM")
-            axs[2].set_xlabel("$\mu$")
+            axs[2].set_xlabel("$\lambda$")
             axs[2].grid(True)
 
             plt.suptitle(title)

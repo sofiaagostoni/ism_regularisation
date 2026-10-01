@@ -11,9 +11,9 @@ import ISM.simulation.PSF_sim as ism
 import ISM.analysis.Graph_lib as gr
 from opt_functions.Data_manager.generate_measurments import *
 
-def run_flux_experiment(algo='pgd', n_realizations=10):
+def run_flux_experiment(algo='prox', n_realizations=10):
     # Setup base
-    mu_values_grid = torch.linspace(1e-6, 1, steps=100) # Ripristinato steps a 100 per RWP
+    mu_values_grid = torch.linspace(1e-5, 1, steps=50) # Ripristinato steps a 100 per RWP
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     output_base = Path("Results/Experiment_Flux_MultiRealization")
@@ -21,6 +21,7 @@ def run_flux_experiment(algo='pgd', n_realizations=10):
     mu_values_grid = mu_values_grid.to(device)
     
     history = {
+        'wsum': [],
         'flux': [],
         'psnr_mean': [],
         'psnr_std': [],
@@ -30,7 +31,7 @@ def run_flux_experiment(algo='pgd', n_realizations=10):
         'raw_data': [] 
     }
     
-    flux_levels = [10, 15, 20, 30, 40, 50, 80]
+    flux_levels = [10, 20, 30, 40, 50]
     
     for f in flux_levels:
         print(f"\n--- Analisi Flux: {f} ---")
@@ -39,6 +40,7 @@ def run_flux_experiment(algo='pgd', n_realizations=10):
         run_psnr = torch.zeros(n_realizations, device=device)
         run_ssim = torch.zeros(n_realizations, device=device)
         run_mu   = torch.zeros(n_realizations, device=device)
+        run_wsum   = torch.zeros(len(mu_values_grid), device=device)
        
         for r in tqdm(range(n_realizations), desc=f"Realizzazioni Flux {f}"):
             
@@ -83,12 +85,13 @@ def run_flux_experiment(algo='pgd', n_realizations=10):
             }
 
             # Esecuzione RWP
-            _, _, _, mu_best, results_best, _ = RWP(
+            W_sum, _, _, mu_best, results_best, _ = RWP(
                 dataset, parameters, hparams, optim=Pgd_Backtracking, 
-                algorithm=ALGORITHM, mask_type=MASK, eps_f=1
-            )
+                algorithm=ALGORITHM, mask_type=MASK, cutoff=0.2)
+            
 
             # Riempimento dei vettori per indice
+            run_wsum += W_sum
             run_psnr[r] = results_best['psnr'][-1]
             run_ssim[r] = results_best['ssim'][-1]
             run_mu[r]   = mu_best if isinstance(mu_best, (float, int)) else mu_best.item()
@@ -99,6 +102,7 @@ def run_flux_experiment(algo='pgd', n_realizations=10):
                 plt.close(fig)
 
         # Ora puoi usare torch.mean e torch.std senza problemi
+        history['wsum'].append(run_wsum/n_realizations)
         history['flux'].append(f)
         history['psnr_mean'].append(run_psnr.mean().item())
         history['psnr_std'].append(run_psnr.std().item())

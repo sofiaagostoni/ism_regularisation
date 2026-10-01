@@ -243,10 +243,12 @@ def prepare_ism_data(is_real=False, real_name='convallaria', load_path=None,
         meta = data['metadati']
         exwl = data['exwl']
         emwl = data['emwl']
+        na = data['na']
         
         exPar = sim.simSettings()
-        exPar.wl = 488  #488 per argolight and convallaria, 640 for purkinje
-        exPar.mask_sampl = 50
+        exPar.wl = exwl  #488 per argolight and convallaria, 640 for purkinje
+        exPar.mask_sampl = 101
+        exPar.na = na
 
         emPar = exPar.copy()
         emPar.wl = emwl #520 per argolight, 660 for purkinje, 510 for convallaria, 515 for tubuline
@@ -320,15 +322,15 @@ def prepare_ism_data(is_real=False, real_name='convallaria', load_path=None,
                 if load_path is None:
                     # assumo tu abbia una funzione plot definita altrove
                     plot([image1, image2], cmap='hot')
-                gr.ShowDataset(PSF[:, 0:1].cpu(), normalize=True)
-                gr.ShowDataset(PSF[:, 1:2].cpu(), normalize=True)
+                gr.ShowDataset(PSF[:, 0:1].cpu(), normalize=False)
+                gr.ShowDataset(PSF[:, 1:2].cpu(), normalize=False)
                 gr.ShowImg(ground_truth[:, 0].unsqueeze(1).to("cpu"), pxsize*1e-3)
                 gr.ShowImg(ground_truth[:, 1].unsqueeze(1).to("cpu"), pxsize*1e-3)
-                gr.ShowDataset(clean_out.cpu(), normalize=True)
-                gr.ShowDataset(clean_in.cpu(), normalize=True)
+                gr.ShowDataset(clean_out.cpu(), normalize=False)
+                gr.ShowDataset(clean_in.cpu(), normalize=False)
                 gr.ShowImg(clean_out.sum(0).cpu(), pxsize*1e-3)
                 gr.ShowImg(clean_in.sum(0).cpu(), pxsize*1e-3)
-                gr.ShowDataset(noise_image.cpu(), normalize=True)
+                gr.ShowDataset(noise_image.cpu(), normalize=False)
         
         else: # 2D
             PSF, ground_truth, clean_image, noise_image, finger_print, physics, \
@@ -337,9 +339,9 @@ def prepare_ism_data(is_real=False, real_name='convallaria', load_path=None,
             clean_final = clean_image
             
             if show_plots:
-                gr.ShowDataset(PSF.cpu(), normalize=True)
+                gr.ShowDataset(PSF.cpu(), normalize=False)
                 gr.ShowImg(ground_truth.to("cpu"), pxsize*1e-3)
-                gr.ShowDataset(noise_image.cpu(), normalize=True)
+                gr.ShowDataset(noise_image.cpu(), normalize=False)
                 gr.ShowImg(noise_image.sum(0).to("cpu"), pxsize*1e-3)  
                 print(f"Max of noise image = {noise_image.max()}")
 
