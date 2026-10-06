@@ -49,6 +49,32 @@ dataset = prepare_ism_data(
     s = hparams['s']
 )
 
+# def radial_otf_cutoff(psf, rel_thresh=0.05):
+#     """
+#     psf: tensore 2D (H,W) — es. PSF out-of-focus mediata sugli elementi
+#     Ritorna il raggio di cutoff in frequenza (in pixel-frequency)
+#     dove l'OTF radiale scende sotto rel_thresh * picco.
+#     """
+#     otf = torch.fft.fftshift(torch.fft.fft2(psf)).abs()
+#     otf = otf / otf.max()
+#     H, W = otf.shape
+#     cy, cx = H // 2, W // 2
+#     yy, xx = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+#     r = torch.sqrt((yy - cy).float()**2 + (xx - cx).float()**2)
+#     r_int = r.round().long()
+
+#     # profilo radiale medio
+#     nbins = r_int.max().item() + 1
+#     prof = torch.zeros(nbins)
+#     cnt  = torch.zeros(nbins)
+#     prof.index_add_(0, r_int.flatten(), otf.flatten())
+#     cnt.index_add_(0, r_int.flatten(), torch.ones_like(otf.flatten()))
+#     prof = prof / cnt.clamp(min=1)
+
+#     # primo raggio sotto soglia
+#     below = (prof < rel_thresh).nonzero()
+#     return below[0].item() if len(below) else nbins - 1
+
 
 noise_image = dataset["noise_image"]
 finger_print = dataset["fingerprint"]

@@ -9,6 +9,8 @@ from skimage.metrics import structural_similarity
 import torch
 import math
 from tqdm import tqdm
+from .white_opt_princ import compute_whiteness
+from.metrics import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -56,7 +58,18 @@ class BaseISMSolver:
         self.data_fid = parameters["data_fid"]
         self.grad_data_fid = parameters["grad_data_fid"]
         self.prior = parameters["prior"]
+        
+        # --- NUOVO: Callback e intervallo ---
+        self.callback = parameters.get("callback", None)
+        self.log_interval = parameters.get("log_interval", 100) # Default: log ogni 100 iterazioni
 
+    def _effective_L_max(self):
+        """Restituisce L_max effettivo in base all'algoritmo."""
+        if self.algorithm == "pgd":
+            return self.params["Lip_reg"] + 8 * self.lam / 1e-2
+        if self.algorithm == 'md':
+            return torch.norm(self.y,1).sum().item()
+        return self.L_max
 
 
     def _get_candidate_and_metrics(self, x_curr, tau, y, lam):
@@ -121,8 +134,12 @@ class BaseISMSolver:
             'x_prev': self.params["x_init"].clone(),
             'tau_k': 1e-3,
             # 'tau_k': 1.0 / self.L_max,
-            't_k': 1.0
+            't_k': 1.0,
+            'L_history': []
         }
+        self.y = y
+        
+        
         
         funct = torch.zeros(self.max_iter, device=self.device)
         iter_err = torch.zeros(self.max_iter, device=self.device)
@@ -164,11 +181,10 @@ class BaseISMSolver:
                 psnr_vec[k] = psnr(x_gt_norm, x_next_norm)
                 ssim_vec[k] = ssim(x_gt_norm, x_next_norm)
                 norm2_vec[k] = torch.linalg.norm(x_gt_norm - x_next_norm)
-
             # # --- CONVERGENZA ---
             if iter_err[k] < self.tollerance:
                 print(f"Convergence reached at iter = {k}")
-                funct, iter_err = funct[:k], iter_err[:k]
+                funct, iter_err, whiteness = funct[:k], iter_err[:k], whiteness[:k]
                 if not self.is_realdata:
                     diff_fid, psnr_vec, ssim_vec, norm2_vec = diff_fid[:k], psnr_vec[:k], ssim_vec[:k], norm2_vec[:k]
                 break
@@ -196,7 +212,7 @@ class BaseISMSolver:
             #         ssim_vec = ssim_vec[:k+1]
             #     break
 
-        return {'x_result': state['x_curr'], 'funct': funct, 'iter_err': iter_err,
+        return {'x_result': state['x_curr'], 'funct': funct, 'iter_err': iter_err, 'whiteness': whiteness, 'L_history': state['L_history'], 'L_th': self._effective_L_max(),  
                 'diff_fid': None if self.is_realdata else diff_fid,
                 'psnr': None if self.is_realdata else psnr_vec,
                 'ssim': None if self.is_realdata else ssim_vec,
@@ -210,7 +226,7 @@ class BaseISMSolver:
 class Pgd(BaseISMSolver):
     def _step(self, state, y):
         x_curr = state['x_curr']
-        tau = 1.0 / self.L_max
+        tau = 1.0 / self._effective_L_max()
         x_next, _, _, f_x_next = self._get_candidate_and_metrics(x_curr, tau, y, self.lam)
         
         state['x_prev'] = x_curr
@@ -221,7 +237,7 @@ class Pgd(BaseISMSolver):
 class RichLucy(BaseISMSolver):
     def _step(self, state, y):
         x_curr = state['x_curr']
-        tau = 1.0 / self.L_max
+        tau = 1.0 / self._effective_L_max()
         x_next, _, _, f_x_next = self._get_candidate_and_metrics(x_curr, tau, y, self.lam)
         
         state['x_prev'] = x_curr
@@ -239,47 +255,45 @@ class Pgd_Backtracking(BaseISMSolver):
 
     def _step(self, state, y):
         x_curr = state['x_curr']
-        tau_k = state['tau_k'] # Recuperiamo il passo precedente!
-        
+        tau_k = state['tau_k']
         tau_candidate = min(tau_k / self.delta, 1.0 / self.s)
         L_candidate = 1.0 / tau_candidate
-
         loop_count = 0
+
         while True:
             tau = 1.0 / L_candidate
-            
             x_next, g_for_dot, f_y_eval, f_x_next = self._get_candidate_and_metrics(
                 x_curr, tau, y, self.lam
             )
-            
             diff_x = x_next - x_curr
             grad_dot = torch.sum(g_for_dot * diff_x)
             sqnorm = torch.sum(diff_x ** 2)
-            
+
             if self.algorithm == "pgd" or self.algorithm == "prox":
                 dist = (L_candidate / 2.0) * sqnorm + grad_dot
-                
             elif self.algorithm == "md":
                 dist = - (0.8 / tau) * Bregman_h(x_next, x_curr)
-        
-            # CONDIZIONE DI BACKTRACKING CORRETTA
+
             if f_x_next <= f_y_eval + dist:
                 break
-                
+
             L_candidate *= self.eta
             loop_count += 1
-            if L_candidate >= self.L_max or loop_count > 50:
-                L_candidate = self.L_max
+
+            if L_candidate >= self._effective_L_max() or loop_count > 50:
+                L_candidate = self._effective_L_max()
                 tau = 1.0 / L_candidate
                 x_next, _, _, f_x_next = self._get_candidate_and_metrics(
                     x_curr, tau, y, self.lam
                 )
                 break
-                
+
+        # --- SALVATAGGIO L ---
+        state['L_history'].append(L_candidate)
         state['x_prev'] = x_curr
         state['x_curr'] = x_next
-        state['tau_k'] = tau          # SALVIAMO IL NUOVO PASSO per la prossima iterazione
-        state['f_x_next'] = f_x_next  # Salviamo la loss
+        state['tau_k'] = tau
+        state['f_x_next'] = f_x_next
         return state
 
 
@@ -290,7 +304,7 @@ class Pgd_Fast(BaseISMSolver):
         x_curr = state['x_curr']
         x_prev = state['x_prev']
         t_k = state['t_k']
-        tau = 1.0 / self.L_max
+        tau = 1.0 / self._effective_L_max()
         
         t_next = (1.0 + math.sqrt(1.0 + 4.0 * (t_k ** 2))) / 2.0
         beta = (t_k - 1.0) / t_next
@@ -348,8 +362,8 @@ class Pgd_Fast_Backtracking(BaseISMSolver):
             L_candidate *= self.eta
             loop_count += 1
             
-            if L_candidate >= self.L_max or loop_count > 50:
-                L_candidate = self.L_max
+            if L_candidate >= self._effective_L_max() or loop_count > 50:
+                L_candidate = self._effective_L_max()
                 tau = 1.0 / L_candidate
                 
                 t_next = (1.0 + math.sqrt(1.0 + 4.0 * (tau_k / tau) * (t_k ** 2))) / 2.0

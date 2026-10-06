@@ -26,24 +26,23 @@ import ISM.analysis.Graph_lib as gr
 from scipy.optimize import least_squares
 import time
 
+dtype = torch.float32
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 # path = r'Data/Real_data'       #es: \\iitfsvge101.iit.local\mms\Data MMS server\STED-ISM\AxialDeconvolution\Convallaria\C
 
-# file = r'01_TOMM20_AF488-17-03-2026-17-34-10.h5'
+# file = r'01_Vimentine-17-04-2026-17-14-26.h5'
 
 # Nz = 2
 
-# name = "01_tomm20"
+# name = "01_vimentine"
 
-# exwl = 493
-# emwl = 518
+# exwl = 667
+# emwl = 685
+# na = 1.49
 
-# save_fromh5_totorch(path, file, Nz, name, exwl, emwl) 
 torch.manual_seed(0)
 #%%
-dtype = torch.float32
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tv= TVLoss()
 
 
 hparams = {
@@ -204,6 +203,10 @@ elif hparams['IS_REAL'] and hparams['real_name'] == '04_tomm20':
 #         "clean_image":dataset["clean_image"].cpu() if isinstance(dataset["clean_image"], torch.Tensor) else dataset["clean_image"],
 #         'meta': dataset["meta"].cpu() if isinstance(dataset["meta"], torch.Tensor) else dataset["meta"],
 #     }
+
+#     # Nel loop di salvataggio
+#     full_path = os.path.abspath(save_path)
+#     print(f"Sto salvando in: {full_path}")
 
 #     torch.save({
 #         'hparams': hparams,

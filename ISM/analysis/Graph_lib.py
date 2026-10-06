@@ -412,7 +412,7 @@ def StackSlider(image: torch.tensor, pxsize_x: float, pxsize_z: float, clabel: s
 
 
 def ShowDataset(dset: torch.tensor, cmap: str = 'hot', pxsize: float = None, normalize: bool = True,
-                colorbar: bool = False, xlims: list = [None, None], ylims: list = [None, None],
+                colorbar: bool = True, xlims: list = [None, None], ylims: list = [None, None],
                 extent = None, figsize: tuple = (6, 6), gridshape = None) -> plt.Figure:
     '''
     It displays all the images of the ISM dataset in a squared grid.
