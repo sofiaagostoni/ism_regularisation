@@ -9,7 +9,6 @@ from skimage.metrics import structural_similarity
 import torch
 import math
 from tqdm import tqdm
-from .white_opt_princ import compute_whiteness
 from.metrics import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
