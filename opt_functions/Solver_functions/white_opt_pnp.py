@@ -14,6 +14,66 @@ from torch.optim.lr_scheduler import StepLR
 import math
 from .projected_gradient import *
 
+def pnp_ism(y, back, parameters_pnp, device):
+    
+    data_fid = parameters_pnp["data_fid"]
+    grad_data_fid  = parameters_pnp["grad_data_fid"] 
+    single_fid  = parameters_pnp["single_data_fid"] 
+    tollerance  = parameters_pnp["tollerance"]      
+    max_iter  = parameters_pnp["max_iter"]     
+    x_init  = parameters_pnp["x_init"]     
+    sigma = parameters_pnp["sigma"]  
+    L_max  = parameters_pnp["Lip_reg"]      
+    pnp   = parameters_pnp["Pnp"]  
+    physics   = parameters_pnp["physics"]
+    
+
+    x_gt = parameters_pnp['ground_truth']
+    # Sposto tutti i tensori sul device
+    funct = torch.zeros(max_iter, device=device)
+    iter_err = torch.zeros(max_iter, device=device)
+    norm2 = torch.zeros(max_iter, device=device)
+    psnr_vec = torch.zeros(max_iter, device=device)
+    ssim_vec = torch.zeros(max_iter, device=device)
+    
+    
+    min_distance = - float('inf')
+
+    x_k_prec = x_init.to(device)  # Assicurati che x_init sia sul device
+    y = y.to(device)
+    back = back.to(device)
+
+    tau = 1/L_max
+    # for k in tqdm(range(max_iter), desc="Iterations") :
+    for k in range(max_iter):
+        with torch.no_grad():
+
+            x_k_succ = torch.max(x_k_prec -  tau* grad_data_fid(y, x_k_prec,  physics), torch.tensor(0))
+            x_k_succ = x_k_succ/ x_k_succ.max()
+            # x_k_succ[:,1:2] = pnp(x_k_succ[:,1:2], sigma)
+            x_k_succ = pnp(x_k_succ, sigma)
+            x_k_succ = torch.clamp(x_k_succ, 0, 1)
+                
+        funct[k] = data_fid(y, x_k_succ, physics)
+        norm2[k] = torch.norm(x_gt - x_k_succ, 'fro')
+        iter_err[k] = torch.norm(x_k_prec - x_k_succ, 'fro') / torch.norm(x_k_prec, 'fro')
+        psnr_vec[k] = psnr(x_gt/x_gt.max(), x_k_succ/x_k_succ.max())
+        ssim_vec[k] = ssim(x_gt/x_gt.max(), x_k_succ/x_k_succ.max())
+                        
+        
+        if iter_err[k] < tollerance:
+            print(f"Convergence reached at iteration = {k}")
+            funct = funct[0:k]
+            iter_err = iter_err[0:k]
+            norm2 = norm2[0:k]
+            # lpips_vec = lpips_vec[0:k] 
+            break
+
+        x_k_prec = x_k_succ
+        
+
+    return x_k_succ, funct.detach(), iter_err.detach(), norm2.detach(), psnr_vec.detach(), ssim_vec.detach()
+
 
 def standardize(Y, lam):
     """
@@ -257,62 +317,57 @@ def find_knee_point(mu_values, W_sum):
     return mu_values[best_idx]
 
 
-def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
-        algorithm="pgd", mask_type="masked", eps_f=0):
+def RWP_PNP(dataset, parameters, hparams, mask_type="masked", eps_f=0):
     """
-    Calcola il Residual Whiteness Principle (RWP) per una griglia di parametri mu (lambda).
-    Sfrutta le classi OOP (PGDSolver, ProxSolver) per massima efficienza e pulizia.
+    Calcola il Residual Whiteness Principle (RWP) per una griglia di parametri sigma.
+    Salva PSNR e SSIM solo per i dati simulati.
     """
-    # 1. RECUPERA IL DEVICE DAI DATI IN INGRESSO
-    
+    # 1. RECUPERA PARAMETRI E DEVICE
     noise_image = dataset["noise_image"]
     back_vec = dataset["back_vec"]
     
-    mu_values_grid = hparams["mu_grid"]
+    sigma_values_grid = hparams["sigma_grid"]
     is_3d = hparams['IS_3D']
-    is_realdata= hparams['IS_REAL']
+    is_realdata = hparams['IS_REAL']
 
     device = noise_image.device
 
     M = noise_image.numel() 
-    n = len(mu_values_grid)
+    n = len(sigma_values_grid)
     
-    # 2. ASSICURATI CHE I TENSORI VENGANO CREATI SUL DEVICE CORRETTO
+    # Inizializza vettori: validi per dati simulati, None per dati reali
     W_sum = torch.empty(n, device=device)    
     psnr_vecs = torch.empty(n, device=device) if not is_realdata else None 
     ssim_vecs = torch.empty(n, device=device) if not is_realdata else None   
     
     min_distance = float('inf') 
-    
-
-
     physics = parameters["physics"]
 
-    # --- 2. PRE-CALCOLO GROUND TRUTH E Z_TRUE (Solo per dati simulati) ---
+    # --- 2. PRE-CALCOLO GROUND TRUTH, Z_TRUE E EPSILON ---
+    
+    # Pre-calcoliamo epsilon in modo sicuro, indipendentemente se i dati sono reali o simulati
+    if mask_type == "masked_eps":
+        if is_3d:
+            # Usa un percentile basso (es. 15%) per stimare il livello di fondo da Y
+            eps = torch.quantile(noise_image.float(), 0.15).item() 
+            print(f"Epsilon value for 3d is {eps}")
+        else:
+            eps = eps_f
+            print(f"Epsilon value for 2d is {eps}")
+
     wh_true = None
     if not is_realdata:
         ground_truth = parameters["ground_truth"]
-        # Uso .view(-1, 1, 1, 1) così si adatta automaticamente a Nz (es. 25 o 2)
+        # Uso .view(-1, 1, 1, 1) così si adatta automaticamente a Nz
         clean_image = physics(ground_truth) + back_vec.view(-1, 1, 1, 1)
-        
         clean_image_proc = clean_image.sum(1).unsqueeze(1) if is_3d else clean_image
         
-        print(noise_image.max())
+        print(f"Noise image max: {noise_image.max().item()}")
 
-        
         if mask_type == "masked":
             Z_true = standardize_unbiased_masked(noise_image, clean_image_proc)
         elif mask_type == "masked_eps":
-            
-            if is_3d:
-            # Usa un percentile basso (es. 15%) per stimare il livello di fondo da Y
-                eps = torch.quantile(noise_image.float(), 0.15).item() 
-                print(f"Epsilon value for 3d is {eps}")
-            else:
-                eps = eps_f
-                print(f"Epsilon value for 2d is {eps}")
-
-            Z_true = standardize_unbiased_masked_eps(noise_image, clean_image_proc, eps_f)
+            Z_true = standardize_unbiased_masked_eps(noise_image, clean_image_proc, eps)
         elif mask_type == "whole":
             Z_true = standardize(noise_image, clean_image_proc)
         else:
@@ -321,25 +376,18 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
         wh_true, M_eff = whiteness_measure(Z_true, mode="highpass", cutoff_ratio=0.10)
         
 
-    # --- 3. RICERCA SULLA GRIGLIA MU ---
-    for i, mu in enumerate(tqdm(mu_values_grid, desc="Searching mu grid (RWP)")):
-        print(f"\n--- Testing mu parameter = {mu} ---")
+    # --- 3. RICERCA SULLA GRIGLIA SIGMA ---
+    best_result_dict = None
+    sigma_best = None
+
+    for i, sigma in enumerate(tqdm(sigma_values_grid, desc="Searching sigma grid (RWP)")):
+        print(f"\n--- Testing sigma parameter = {sigma.item():.6f} ---")
                 
         parameters["sigma"] = sigma
-        tau = 1/L
-        x_result_drunet, KL_vec_drunet, iter_drunet, norm2_drunet = pnp_ism(noise_image, dataset['back_vec'], parameters, device)
-
-        results = solver.solve(y=noise_image)
+        
+        # Esecuzione algoritmo PnP
+        x_result, funct, iter_drunet, norm2_drunet, psnr_vec, ssim_vec = pnp_ism(noise_image, dataset['back_vec'], parameters, device)
       
-        # Calcolo e riadattamento di lambda_d
-        x_result = results['x_result']
-        # if i == 0:
-        #     max_lam0 = x_result.max()
-        # else:
-        #     x_result = x_result / x_result.max() * max_lam0
-            
-        print(x_result.max())
-            
         lambda_d = physics(x_result) + back_vec.view(-1, 1, 1, 1)
         if is_3d:
             lambda_d = lambda_d.sum(1).unsqueeze(1)
@@ -348,9 +396,6 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
         if mask_type == "masked":
             Z = standardize_unbiased_masked(noise_image, lambda_d) 
         elif mask_type == "masked_eps":
-            # x1 = x_result[:,0:1]
-            # # x1_masked = x1[x1 != 0]
-            # eps = x1.mean() if is_3d else eps_f
             Z = standardize_unbiased_masked_eps(noise_image, lambda_d, eps)
         elif mask_type == "whole":
             Z = standardize(noise_image, lambda_d)
@@ -361,30 +406,29 @@ def RWP(dataset, parameters, hparams, optim = Pgd_Backtracking,
         wh, M_eff = whiteness_measure(Z, mode="highpass", cutoff_ratio=0.10)
         W_sum[i] = M_eff * wh
         
-        # Metriche PSNR/SSIM (solo se non siamo con dati reali)
+        # Calcolo Metriche PSNR/SSIM (solo per dati simulati)
         if not is_realdata:
-            # results['psnr'] contiene l'evoluzione, prendiamo l'ultimo elemento [-1]
-            psnr_vecs[i] = results['psnr'][-1].item()
-            ssim_vecs[i] = results['ssim'][-1].item()
-            
-            print(f"PSNR = {psnr_vecs[i]:.2f} | SSIM = {ssim_vecs[i]:.4f}")
+            psnr_vecs[i] = psnr_vec[-1].item()
+            ssim_vecs[i] = ssim_vec[-1].item()
+            print(f"WP = {W_sum[i]:.4e} | PSNR = {psnr_vecs[i]:.2f} | SSIM = {ssim_vecs[i]:.4f}")
+        else:
+            print(f"WP = {W_sum[i]:.4e}")
         
-        # Aggiornamento del minimo
+        # Aggiornamento del minimo per WP
         if W_sum[i] < min_distance:
-            best_results = results
-            mu_best = mu
+            # Salviamo i risultati in un dizionario per compatibilità con la funzione di plot
+            best_result_dict = {
+                "x_result": x_result,
+                "funct": funct,
+                "iter": iter_drunet,
+                "norm2": norm2_drunet,
+                "psnr_vec":psnr_vec,
+                "ssim_vec":ssim_vec
+            }
+            sigma_best = sigma
             min_distance = W_sum[i]
 
-        print(f"WP = {W_sum[i]}")
-        
-    mu_best_knee = find_knee_point(mu_values_grid.cpu(), W_sum.cpu())
-    
-    # parameters['lam'] = mu_best_knee
-    # solver = SolverClass(parameters, algorithm = algorithm, is_3d=is_3d, is_realdata = is_realdata)
-
-    # results_knee = solver.solve(y=noise_image)
-
-    return W_sum, psnr_vecs, ssim_vecs, mu_best, best_results, wh_true
+    return W_sum, psnr_vecs, ssim_vecs, sigma_best, best_result_dict, wh_true
 
 
 def RWP_Adam_1Step(dataset, parameters, hparams, optim=Pgd_Backtracking,

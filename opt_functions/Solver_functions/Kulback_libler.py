@@ -52,6 +52,9 @@ class KL(nn.Module):
             return torch.sum(kl)
         
         
+    
+        
+        
     def forward_25_3D(self, y, x, physics):
         x = x.repeat(25,1,1,1)
         clean = physics(x) 

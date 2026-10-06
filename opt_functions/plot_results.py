@@ -7,7 +7,7 @@ import ISM.analysis.Graph_lib as gr
 from deepinv.loss.metric import SSIM, MSE, PSNR, LPIPS
 from microssim import MicroSSIM, micro_structural_similarity
 from opt_functions import * 
-from ism_regularisation_learned.opt_functions.Solver_functions.white_opt_pnp import *
+from .Solver_functions.white_opt_pnp import *
 from .Data_manager.generate_measurments import *
 
 import torchmin
@@ -110,7 +110,7 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
     
     x_result = results['x_result']
     funct = results['funct']
-    funct_metric = results['diff_fid']
+    funct_metric = results['norm2']
     iter_err = results['iter_err']
     psnr_vec = results['psnr']
     ssim_vec = results['ssim']
@@ -232,39 +232,27 @@ def plot_results(results, dataset, IS_REAL, IS_3D, pxsize, x0_sec, y0_sec):
             
 
 
-def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_3d = True, title="Metrica", layout="twin", x0 = 100, y0 = 100):
+def plot_wp_results(sigma_values_grid, results, dataset, pxsize, is_real=False, is_3d=True, title="Metrica", layout="twin", x0=100, y0=100):
     """
-    Plotta i risultati dell'ottimizzazione del parametro mu.
-    
-    Parametri:
-    - mu_values_grid: tensore con i valori di mu
-    - W_sum: tensore con i valori della loss/WP
-    - psnr_vecs: tensore con i valori di PSNR (ignorato se is_real=True)
-    - ssim_vecs: tensore con i valori di SSIM (ignorato se is_real=True)
-    - is_real: bool, se True non plotta PSNR e SSIM
-    - title: stringa per il titolo del grafico (es. "TV", "SOB")
-    - layout: "twin" (grafico singolo con doppio asse Y) o "stacked" (3 subplot separati)
+    Plotta i risultati dell'ottimizzazione del parametro sigma per PnP.
     """
-    
     W_sum = results["W_sum"]
-    psnr_vecs = results["psnr_vecs"]  
-    ssim_vecs = results["ssim_vecs"]
     results_best = results["results_best"]
-    x_best = results_best["x_result"]
-    # Portiamo tutto su CPU per matplotlib
-    mu_vals = mu_values_grid.detach().cpu()
-    W = torch.abs(W_sum).detach().cpu()
+    # x_best = results_best["x_result"]
+    
+    # Portiamo tutto su CPU e convertiamo in NumPy per compatibilità perfetta con Matplotlib
+    sigma_vals = sigma_values_grid.detach().cpu().numpy()
+    W = torch.abs(W_sum).detach().cpu().numpy()
     
     # Calcolo ottimo per WP
-    min_idx = torch.argmin(W)
-    mu_best_wp = mu_vals[min_idx]
+    min_idx = np.argmin(W)
+    sigma_best_wp = sigma_vals[min_idx]
     
     print(f"--- Risultati per {title} ---")
-    print(f"Mu ottimale (min WP): {mu_best_wp.item():.6e} con WP = {W[min_idx].item():.6e}")
+    print(f"Sigma ottimale (min WP): {sigma_best_wp:.6e} con WP = {W[min_idx]:.6e}")
     
-    best_mu_needle = find_knee_point(mu_vals.cpu(),W_sum.cpu())
-
-
+    # Troviamo il knee point usando i tensori su CPU come richiesto dalla funzione originale
+    best_sigma_needle = find_knee_point(sigma_values_grid.cpu(), W_sum.cpu()).item()
 
     # Impostazioni notazione scientifica asse Y
     formatter = ScalarFormatter(useMathText=True)
@@ -272,145 +260,123 @@ def plot_wp_results(mu_values_grid, results, dataset, pxsize, is_real=False, is_
     formatter.set_powerlimits((-1, 1))
 
     if is_real:
-        # Caso dati reali: plottiamo SOLO W_sum
-        fig, ax1 = plt.subplots(figsize=(8, 5))
-        ax1.semilogx(mu_vals, W, label="RWP", color="tab:blue")
-        ax1.semilogx(mu_best_wp, W[min_idx], 'go', label = "Minimum")
+        # --- CASO DATI REALI ---
+        plt.figure(figsize=(8, 5))
         
-        ax1.yaxis.set_major_formatter(formatter)
-        ax1.set_xlabel("$\mu$")
-        ax1.set_ylabel("$W(\mu)$", color="tab:blue")
-        ax1.tick_params(axis='y', labelcolor="tab:blue")
-        ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
-        ax1.axvline(best_mu_needle.item(), color="red", linestyle="--", alpha=0.7)
-        # ax1.axvline(best_mu_knee.item(), color="orange", linestyle="--", alpha=0.7)
-        # ax1.axvline(best_mu_two.item(), color="black", linestyle="--", alpha=0.7)
-        # ax1.axvline(best_mu_min.item(), color="orange", linestyle="--", alpha=0.7)
+        # Plottiamo W_sum usando i vettori numpy
+        plt.semilogx(sigma_vals, W, label="WH", color="tab:blue")
+        plt.semilogx(sigma_best_wp, W[min_idx], 'go', label="Minimum")
         
+        # Linee verticali
+        plt.axvline(sigma_best_wp, color="green", linestyle="--", alpha=0.7)
+        plt.axvline(best_sigma_needle, color="red", linestyle="--", alpha=0.7)
         
-        # 1. Coordinate degli estremi per la corda
-        x_chord = [mu_vals[1], mu_vals[-1]]
+        # Geometria Knee Point
+        x_chord = [sigma_vals[1], sigma_vals[-1]]
         y_chord = [W[1], W[-1]]
-
-        # 2. Coordinate del punto di Knee (assumendo tu abbia calcolato best_mu_knee)
-        # Troviamo l'indice del knee point nei dati originali per avere la coordinata Y corretta
-        idx_knee = np.argmin(np.abs(mu_vals - best_mu_needle))
+        idx_knee = np.argmin(np.abs(sigma_vals - best_sigma_needle))
         y_knee = W[idx_knee]
 
-        # --- DISEGNO DELLA CORDA ---
-        ax1.plot(x_chord, y_chord, color='gray', linestyle='--', linewidth=1.5, label="Chord")
-
-        # --- DISEGNO DEL TRIANGOLO ---
-        # Creiamo un poligono che unisce: Inizio, Fine e Knee Point
-        triangle_x = [mu_vals[1], mu_vals[-1], best_mu_needle.item()]
+        plt.plot(x_chord, y_chord, color='gray', linestyle='--', linewidth=1.5, label="Chord")
+        
+        triangle_x = [sigma_vals[1], sigma_vals[-1], best_sigma_needle]
         triangle_y = [W[1], W[-1], y_knee]
         
-        # Usiamo fill per colorare l'area del triangolo (opzionale)
-        ax1.fill(triangle_x, triangle_y, color='orange', alpha=0.2, label="Knee Area")
-        
-        # Disegniamo i bordi del triangolo per chiarezza
-        ax1.plot(triangle_x + [triangle_x[0]], triangle_y + [triangle_y[0]], 
+        plt.fill(triangle_x, triangle_y, color='orange', alpha=0.2, label="Knee Area")
+        plt.plot(triangle_x + [triangle_x[0]], triangle_y + [triangle_y[0]], 
                  color='darkorange', linestyle='-', linewidth=1)
+        plt.plot(best_sigma_needle, y_knee, 'ro', markersize=8, label="Knee Point")
 
-        # Segnamo il Knee Point con un marker specifico
-        ax1.plot(best_mu_needle, y_knee, 'ro', markersize=8, label="Knee Point")
-
-        
-        ax1.legend(loc='best')
+        # Formattazione assi (Senza "set_")
+        plt.gca().yaxis.set_major_formatter(formatter)
+        plt.xlabel("Sigma", fontsize=14)
+        plt.ylabel(r"$\mathrm{KL}(x_k,\ x_{\mathrm{GT}})$", fontsize=14)
         plt.title(f"{title} Real Data")
-        plt.tight_layout()
+        
         plt.grid(True)
+        plt.legend(loc='best')
+        plt.tight_layout()
         plt.show()
         
-        
-        meta = dataset['meta']
-        noise_image = dataset['noise_image'].cpu()
-        x_best = x_best.cpu()
-        clabel = meta.pxdwelltime
-
-        
     else:
-        # Caso dati simulati: abbiamo PSNR e SSIM
-        psnr = psnr_vecs.detach().cpu()
-        ssim = ssim_vecs.detach().cpu()
-        max_idx_psnr = torch.argmax(psnr)
-        max_idx_ssim = torch.argmax(ssim)
+        # --- CASO DATI SIMULATI ---
+        psnr = results["psnr_vecs"].detach().cpu().numpy()
+        ssim = results["ssim_vecs"].detach().cpu().numpy()
+        max_idx_psnr = np.argmax(psnr)
+        max_idx_ssim = np.argmax(ssim)
         
-        print(f"Mu ottimale (max PSNR): {mu_vals[max_idx_psnr].item():.6e} con PSNR = {psnr[max_idx_psnr].item():.4f} dB")
-        print(f"Mu ottimale (max SSIM): {mu_vals[max_idx_ssim].item():.6e} con SSIM = {ssim[max_idx_ssim].item():.4f}\n")
+        print(f"Sigma ottimale (max PSNR): {sigma_vals[max_idx_psnr]:.6e} con PSNR = {psnr[max_idx_psnr]:.4f} dB")
+        print(f"Sigma ottimale (max SSIM): {sigma_vals[max_idx_ssim]:.6e} con SSIM = {ssim[max_idx_ssim]:.4f}\n")
 
         if layout == "twin":
-            # Layout con doppio asse Y (WP a sinistra, PSNR a destra)
             fig, ax1 = plt.subplots(figsize=(8, 5))
 
-            ax1.semilogx(mu_vals, W, label="RWP", color="tab:blue")
-            ax1.semilogx(mu_best_wp, W[min_idx], 'go')
+            ax1.semilogx(sigma_vals, W, label="WH", color="tab:blue")
+            ax1.semilogx(sigma_best_wp, W[min_idx], 'go')
             ax1.yaxis.set_major_formatter(formatter)
-            ax1.set_xlabel("$\mu$")
-            ax1.set_ylabel("$W(\mu)$", color="tab:blue")
+            
+            # Applichiamo xlabel e ylabel all'asse principale (plt)
+            plt.xlabel("Sigma", fontsize=14)
+            plt.ylabel(r"$\mathrm{KL}(x_k,\ x_{\mathrm{GT}})$", fontsize=14)
+            
             ax1.tick_params(axis='y', labelcolor="tab:blue")
-            ax1.axvline(mu_best_wp.item(), color="green", linestyle="--", alpha=0.7)
-            # ax1.axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
-            # ax1.axvline(best_mu_knee.item(), color="orange", linestyle="--", alpha=0.7)
-            # ax1.axvline(best_mu_two.item(), color="black", linestyle="--", alpha=0.7)
-            # ax1.axvline(best_mu_min.item(), color="brown", linestyle="--", alpha=0.7)
+            ax1.axvline(sigma_best_wp, color="green", linestyle="--", alpha=0.7)
 
-
-
-
+            # Asse secondario per PSNR
             ax2 = ax1.twinx()
-            ax2.semilogx(mu_vals, psnr, label="PSNR", color="tab:orange")
-            ax2.semilogx(mu_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
+            ax2.semilogx(sigma_vals, psnr, label="PSNR", color="tab:orange")
+            ax2.semilogx(sigma_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
             ax2.set_ylabel("PSNR (dB)", color="tab:orange")
             ax2.tick_params(axis='y', labelcolor="tab:orange")
-            ax2.axvline(mu_vals[max_idx_psnr].item(), color="red", linestyle="--", alpha=0.7)
+            ax2.axvline(sigma_vals[max_idx_psnr], color="red", linestyle="--", alpha=0.7)
 
             # Combina le legende
             lines1, labels1 = ax1.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
 
-            plt.title(title)
-            plt.tight_layout()
+            plt.title("WH")
             plt.grid(True)
+            plt.tight_layout()
             plt.show()
 
         elif layout == "stacked":
-            # Layout con 3 subplot separati verticalmente
             fig, axs = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
 
-            # RWP
-            axs[0].semilogx(mu_vals, W, color="tab:blue")
-            axs[0].semilogx(mu_best_wp, W[min_idx], 'go')
-            axs[0].axvline(mu_best_wp.item(), color="green", linestyle="--")
-            axs[0].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
+            # WH Loss
+            axs[0].semilogx(sigma_vals, W, color="tab:blue")
+            axs[0].semilogx(sigma_best_wp, W[min_idx], 'go')
+            axs[0].axvline(sigma_best_wp, color="green", linestyle="--")
+            axs[0].axvline(best_sigma_needle, color="orange", linestyle="--", alpha=0.7)
             axs[0].yaxis.set_major_formatter(formatter)
-            axs[0].set_ylabel("WP")
+            axs[0].set_ylabel(r"$\mathrm{KL}(x_k,\ x_{\mathrm{GT}})$", fontsize=12)
             axs[0].grid(True)
 
             # PSNR
-            axs[1].semilogx(mu_vals, psnr, color="tab:orange")
-            axs[1].semilogx(mu_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
-            axs[1].axvline(mu_vals[max_idx_psnr].item(), color="red", linestyle="--")
-            axs[1].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
+            axs[1].semilogx(sigma_vals, psnr, color="tab:orange")
+            axs[1].semilogx(sigma_vals[max_idx_psnr], psnr[max_idx_psnr], 'ro')
+            axs[1].axvline(sigma_vals[max_idx_psnr], color="red", linestyle="--")
+            axs[1].axvline(best_sigma_needle, color="orange", linestyle="--", alpha=0.7)
             axs[1].set_ylabel("PSNR (dB)")
             axs[1].grid(True)
 
             # SSIM
-            axs[2].semilogx(mu_vals, ssim, color="tab:green")
-            axs[2].semilogx(mu_vals[max_idx_ssim], ssim[max_idx_ssim], 'go')
-            axs[2].axvline(mu_vals[max_idx_ssim].item(), color="green", linestyle="--")
-            axs[2].axvline(best_mu_needle.item(), color="orange", linestyle="--", alpha=0.7)
-
+            axs[2].semilogx(sigma_vals, ssim, color="tab:green")
+            axs[2].semilogx(sigma_vals[max_idx_ssim], ssim[max_idx_ssim], 'go')
+            axs[2].axvline(sigma_vals[max_idx_ssim], color="green", linestyle="--")
+            axs[2].axvline(best_sigma_needle, color="orange", linestyle="--", alpha=0.7)
             axs[2].set_ylabel("SSIM")
-            axs[2].set_xlabel("$\mu$")
             axs[2].grid(True)
-
-            plt.suptitle(title)
+            
+            # Applichiamo xlabel globale
+            plt.xlabel("Sigma", fontsize=14)
+            plt.suptitle("WH")
+            
             plt.tight_layout()
             plt.show()
                        
-    plot_results(results_best, dataset, is_real, is_3d, pxsize, x0_sec = x0, y0_sec = y0)
+    # Assumendo che plot_results sia definita altrove nel tuo codice
+    plot_results(results_best, dataset, is_real, is_3d, pxsize, x0_sec=x0, y0_sec=y0)
     
     
     

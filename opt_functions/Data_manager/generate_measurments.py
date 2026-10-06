@@ -144,7 +144,6 @@ def generate_meas_ism_3D(image, Nx, Nz, pxsize, flux):
     # create a 2D PSF for 25 detectors 
     PSF, detPSF, exPSF = ism.SPAD_PSF_3D(grid, exPar, emPar)
     
-  
     # PSF = PSF.unsqueeze(0)
     PSF = PSF.permute(3, 0, 1, 2)
     PSF[:,0:1] = PSF[:,0:1] / PSF[:,0:1].sum()
@@ -196,7 +195,7 @@ def generate_meas_ism_3D(image, Nx, Nz, pxsize, flux):
 
 def prepare_ism_data(is_real=False, real_name='convallaria', load_path=None, 
                      phantom_type='tubulin', Nx=256, Ny=256, Nz=2, pxsize=40, flux=10, 
-                     device='cpu', show_plots=True):
+                     device='cpu', show_plots=True, normalization_y = True, s = 2e3):
     """
     Gestisce il caricamento o la generazione dei dati ISM e delle misurazioni.
     Ritorna un dizionario con tutti gli elementi essenziali per il solver.
@@ -332,7 +331,7 @@ def prepare_ism_data(is_real=False, real_name='convallaria', load_path=None,
         
         else: # 2D
             PSF, ground_truth, clean_image, noise_image, finger_print, physics, \
-            back_vec, L_th, x_0 = generate_meas_ism(image, Nx, Nz, pxsize, flux, 3e3, n_samples=10)
+            back_vec, L_th, x_0 = generate_meas_ism(image, Nx, Nz, pxsize, flux, s = s, n_samples=10, normalization=normalization_y)
             
             clean_final = clean_image
             

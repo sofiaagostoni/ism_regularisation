@@ -215,3 +215,10 @@ __marimo__/
 
 Results/
 Data/
+
+
+# Weights & Biases
+wandb/
+
+# JSON files
+*.json
