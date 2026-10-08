@@ -1,6 +1,6 @@
 import torch
 import deepinv as dinv
-from deepinv.optim.data_fidelity import PoissonLikelihood
+from deepinv.optim.data_fidelity import PoissonLikelihood, L2
 from deepinv.physics import Denoising, PoissonNoise
 
         
@@ -9,6 +9,14 @@ import ISM.simulation.PSF_sim as ism
 import torch
 import deepinv as dinv
 from deepinv.physics import Blur, PoissonNoise
+
+class PoissonWithBackground(PoissonNoise):
+    def __init__(self, gain, bkg):
+        super().__init__(gain=gain)
+        self.bkg = bkg
+
+    def forward(self, x, **kwargs):
+        return super().forward(x + self.bkg, **kwargs)
 
 
 
@@ -31,14 +39,15 @@ def generate_meas_ism(image, Nx, Nz, pxsize, flux, device):
     z_shift = 0 #nm
     
     # create a 2D PSF for 25 detectors 
-    PSF, detPSF, exPSF = ism.SPAD_PSF_2D(grid, exPar, emPar)
+    PSF, _, _ = ism.SPAD_PSF_2D(grid, exPar, emPar)
         
     psf_center = PSF[12:13] #center
     # fingerprint of center psf
     f_center = torch.sum(psf_center).to(device)
     # background weight parameter
-    beta = torch.tensor(1e-2).to(device)
+    beta = torch.tensor(1e-4).to(device)
 
+    # compute normalization
     x_center = PSF[12:13].sum()
     index = torch.zeros(25).to(device)
     finger_print = torch.zeros(25).to(device)
@@ -60,18 +69,25 @@ def generate_meas_ism(image, Nx, Nz, pxsize, flux, device):
             device=device,
         )
         physics_noise_i = Denoising()
-        physics_noise_i.noise_model = PoissonNoise(gain = rec_alpha)
+        physics_noise_i.noise_model = PoissonWithBackground(gain = rec_alpha, bkg=eta_vec[i])
         physics_list.append(physics_noise_i * physics_blurr_i)
         
     physics = dinv.physics.StackedLinearPhysics(physics_list, device=device)
 
 
-    like_list = []
+    like_list_poisson = []
     for i in range(len(physics_list)):
-        like_i = PoissonLikelihood(gain=1.0/flux, bkg=eta_vec[i])
-        like_list.append(like_i)
+        like_i_poisson = PoissonLikelihood(gain=1.0/flux, bkg=eta_vec[i])
+        like_list_poisson.append(like_i_poisson)
 
-    data_fidelity = dinv.optim.StackedPhysicsDataFidelity(like_list)
+    data_fidelity_poisson = dinv.optim.StackedPhysicsDataFidelity(like_list_poisson)
+    
+    like_list_l2 = []
+    for i in range(len(physics_list)):
+        like_i_l2 = L2(sigma=1.0)
+        like_list_l2.append(like_i_l2)
+
+    data_fidelity_l2 = dinv.optim.StackedPhysicsDataFidelity(like_list_l2)
 
     # Apply the degradation to the image
     y = physics(image)
@@ -83,16 +99,29 @@ def generate_meas_ism(image, Nx, Nz, pxsize, flux, device):
 
 
     # Lipschitz costant
-    # L = torch.zeros(25)
-    # for j in range(0,25):
-    #     x_ones = torch.ones_like(ground_truth.repeat(25,1,1,1))
-    #     norm_H = torch.max(physics_blurr(x_ones)[j]) * torch.max(physics_blurr.A_adjoint(x_ones)[j])
-    #     norm_y = torch.max(torch.abs(noise_image[j]))
-    #     L[j] = (norm_y / back_vec[j]**2)* norm_H
-    # L_th = torch.sum(L)
+    L_kl = torch.zeros(25, device=device)
+    x_ones = torch.ones_like(image)
+    for j in range(25):
+        A_j = physics_list[j]
+        norm_H = A_j.A(x_ones).max() * A_j.A_adjoint(torch.ones_like(y[j])).max()
+        norm_y = y[j].abs().max()
+        L_kl[j] = norm_y / eta_vec[j]**2 * norm_H
+    L_kl = L_kl.sum()
+    
+    
+    sigma_vec = torch.ones(25, device=device)   # or your per-detector sigmas
+
+    L_l2 = torch.zeros(25, device=device)
+    x_ones = torch.ones_like(image)
+    for j in range(25):
+        A_j = physics_list[j]
+        norm_H = A_j.A(x_ones).max() * A_j.A_adjoint(torch.ones_like(y[j])).max()
+        L_l2[j] = norm_H / sigma_vec[j]**2
+    L_l2 = L_l2.sum()
+
         
     
-    return PSF, y, avg_y, sum_y, finger_print, physics, data_fidelity
+    return PSF, y, avg_y, sum_y, finger_print, physics, data_fidelity_poisson, data_fidelity_l2, L_kl, L_l2
 
 def crop_center(img, cropx, cropy):
         y, x = img.shape[2], img.shape[3]
@@ -187,3 +216,5 @@ def generate_meas_ism_3D(x, Nx, Nz, pxsizex, flux, device):
     
     
     return PSF, y, sum_y, finger_print, physics, data_fidelity
+
+
