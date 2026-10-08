@@ -14,6 +14,15 @@ import os
 import csv
 import time
 import itertools
+import os
+import sys
+_WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_WCRR_ROOT = os.path.join(_WORKSPACE, "weakly_convex_ridge_regularizer")
+
+if _WCRR_ROOT not in sys.path:
+    sys.path.append(_WCRR_ROOT)
+
+from models import utils
 from dataclasses import dataclass, field
 
 import torch
@@ -59,11 +68,14 @@ class Config:
     sigma_grid: torch.Tensor = field(default_factory=lambda: torch.logspace(-3, -1, 10))
     iter_grid: torch.Tensor = field(
         default_factory=lambda: torch.linspace(10, 100, 10).round().long())
+    lam_grid : torch.Tensor = field(default_factory=lambda: torch.logspace(-3, -1, 10))
 
     # solver
     algo: str = "PGD"                         # 'MD' (RED), 'PGD' (PnP), 'PNP_MD', 'HQS', ...
     lam: float = 1.0                          # regularization weight (matters for RED)
     kl_step_scale: float = 5e3
+    l2_step_scale: float = 1
+
     seed: int = 0
 
     def __post_init__(self):
@@ -107,29 +119,80 @@ class PositiveDenoiser(torch.nn.Module):
 
     def forward(self, x, sigma, **kwargs):
         return self.denoiser(x, sigma, **kwargs).clamp(0, 1)
+    
+
+class ProjGDIteration(OptimIterator):
+    """Projected gradient descent on f + lambda*R, projection onto x >= 0."""
+
+    def forward(self, X, cur_data_fidelity, cur_prior, cur_params, y, physics,
+                *args, **kwargs):
+        x_prev = X["est"][0]
+        lam, tau, sigma = cur_params["lambda"], cur_params["stepsize"], cur_params["g_param"]
+
+        grad = cur_data_fidelity.grad(x_prev, y, physics) + lam * cur_prior.grad(x_prev, sigma)
+        x = (x_prev - tau * grad).clamp_min(0)
+
+        cost = cur_data_fidelity(x, y, physics) + lam * cur_prior(x, sigma)
+        return {"est": (x,), "cost": cost}
+    
+class WCRRPrior(dinv.optim.Prior):
+    def __init__(self, sigma=25.0, device="cpu", n_power_steps=200):
+        super().__init__()
+        self.explicit_prior = True
+        self.model = utils.load_model("WCRR-CNN", str(device))
+
+        # Update the conv layer's Lipschitz bound once, at construction
+        with torch.no_grad():
+            self.model.conv_layer.spectral_norm(mode="power_method", n_steps=n_power_steps)
+            
+                # Move tensors stored as plain attributes (spline grids) to the device
+        self.model.to(device)
+        for m in self.model.modules():
+            for attr, val in list(vars(m).items()):
+                if torch.is_tensor(val) and not isinstance(val, torch.nn.Parameter):
+                    setattr(m, attr, val.to(device))
+
+        self.sigma = torch.tensor([sigma], device=device).view(-1, 1, 1, 1)
+
+    def _sigma_for(self, x, sigma):
+        # match the batch size of x
+        s = self.sigma if sigma is None else torch.as_tensor(sigma, device=x.device, dtype=x.dtype)
+        return s.reshape(-1, 1, 1, 1).expand(x.shape[0], 1, 1, 1)
+
+    def fn(self, x, sigma, *args, **kwargs):
+        # R(x); assumes the model exposes its cost as model.cost(x, sigma)
+        return self.model.cost(x, self._sigma_for(x, sigma))
+
+    def grad(self, x, sigma, *args, **kwargs):
+        return self.model.grad(x, self._sigma_for(x, sigma))
+    
+    def get_mu(self, *args, **kwargs):
+        return self.model.get_mu()
 
 
 def get_denoiser(loss, cfg):
     """Load the bare denoiser (not yet wrapped as PnP or RED)."""
     if cfg.prior_name == "TV":
         return dinv.models.TVDenoiser(n_it_max=20)
-
+    
+    if cfg.prior_name == 'weakly_convex':
+        return WCRRPrior(sigma=25.0, device=cfg.device)
+    
     if cfg.prior_name == "Drunet":
         drunet = dinv.models.DRUNet(in_channels=1, out_channels=1,
                                     pretrained="download", device=cfg.device)
+        return PositiveDenoiser(drunet)
     elif cfg.prior_name == "Drunet_finetune":
         drunet = dinv.models.DRUNet(in_channels=1, out_channels=1,
                                     pretrained=None, device=cfg.device)
         ckpt_path = os.path.join(cfg.ckpt_dir, f"best_model_checkpoint_drunet_{loss}.pth")
         ckpt = torch.load(ckpt_path, map_location=cfg.device)
         drunet.load_state_dict(ckpt["model_state_dict"])
+        return PositiveDenoiser(drunet)
     else:
         raise ValueError(f"Unknown prior: {cfg.prior_name}")
 
-    drunet.eval()
-    for p in drunet.parameters():
-        p.requires_grad_(False)
-    return PositiveDenoiser(drunet)
+    
 
 
 def wrap_prior(denoiser, algo):
@@ -163,12 +226,24 @@ def make_measurements(x, flux, cfg):
     return dict(zip(MEAS_KEYS, out))
 
 
-def get_fidelity(fidelity_name, meas, cfg):
-    if fidelity_name.upper() == "KL":
-        return meas["df_kl"], (1 / meas["L_kl"].item()) * cfg.kl_step_scale
-    if fidelity_name.upper() == "L2":
-        return meas["df_l2"], 1 / meas["L_l2"].item()
-    raise ValueError(f"Unknown fidelity: {fidelity_name}")
+def get_fidelity(fidelity_name, meas, cfg, lam=1.0, prior=None):
+    name = fidelity_name.upper()
+    if name == "KL":
+        datafid = meas["df_kl"]
+        L_f = meas["L_kl"].item() *cfg.kl_step_scale
+    elif name == "L2":
+        datafid = meas["df_l2"]
+        L_f = meas["L_l2"].item() *cfg.l2_step_scale
+    else:
+        raise ValueError(f"Unknown fidelity: {fidelity_name}")
+
+    L_tot = L_f
+    if cfg.prior_name == "weakly_convex":
+        L_R = float(prior.get_mu())   # Lipschitz constant of grad R
+        L_tot = L_f + lam * L_R
+
+    stepsize = 1 / L_tot
+    return datafid, stepsize
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +271,8 @@ class PnPMDIteration(OptimIterator):
 def get_iteration(algo):
     if algo.upper() == "PNP_MD":
         return PnPMDIteration()
+    if algo.upper() == "PROJ_GD":
+        return ProjGDIteration()
     return algo.upper()
 
 
@@ -218,36 +295,39 @@ def build_model(prior, data_fidelity, stepsize, sigma, n_iter, algo, lam):
         data_fidelity=data_fidelity,
         params_algo={"stepsize": stepsize, "g_param": sigma, "sigma": sigma,
                      "lambda": lam},
+        backtracking=True,
         early_stop=False, max_iter=n_iter,
         crit_conv="residual", thres_conv=1e-5,
         get_output=custom_output, verbose=False, custom_init=init_fn,
     )
 
 
-def grid_search(x, y, physics, prior, data_fidelity, stepsize,
-                sigmas, iters, algo, lam, desc="grid search", verbose=False):
-    psnr_map = torch.full((len(sigmas), len(iters)), torch.nan)
-    best = {"psnr": -float("inf"), "sigma": None, "iter": None, "x": None, "metrics": None}
-    combos = list(itertools.product(enumerate(sigmas), enumerate(iters)))
+def grid_search(x, y, physics, prior, data_fidelity, stepsizes,
+                sigmas, iters, lambdas, algo, desc="grid search", verbose=False):
+    psnr_map = torch.full((len(sigmas), len(iters), len(lambdas)), torch.nan)
+    best = {"psnr": -float("inf"), "sigma": None, "iter": None, "lambda": None,
+            "stepsize": None, "x": None, "metrics": None}
+    combos = list(itertools.product(enumerate(sigmas), enumerate(iters), enumerate(lambdas)))
 
-    for (i, s), (j, n_it) in tqdm(combos, desc=desc, leave=False):
-        model = build_model(prior, data_fidelity, stepsize, float(s), int(n_it), algo, lam)
+    for (i, s), (j, n_it), (k, l) in tqdm(combos, desc=desc, leave=False):
+        l = float(l)
+        model = build_model(prior, data_fidelity, stepsizes[k], float(s), int(n_it), algo, l)
         with torch.no_grad():
             x_model, metrics = model(y, physics, x_gt=x, compute_metrics=True)
 
         if not torch.isfinite(x_model).all():
             if verbose:
-                tqdm.write(f"sigma = {float(s):.4f}, iter = {int(n_it)}: diverged (NaN/inf)")
+                tqdm.write(f"sigma = {float(s):.4f}, iter = {int(n_it)}, lambda = {l:.4g}: diverged (NaN/inf)")
             continue
 
         p = psnr_fn(x, x_model / x_model.max()).item()
-        psnr_map[i, j] = p
+        psnr_map[i, j, k] = p
         if verbose:
-            tqdm.write(f"sigma = {float(s):.4f}, iter = {int(n_it)}  PSNR: {p:.2f} dB")
+            tqdm.write(f"sigma = {float(s):.4f}, iter = {int(n_it)}, lambda = {l:.4g}  PSNR: {p:.2f} dB")
 
         if p > best["psnr"]:
-            best = {"psnr": p, "sigma": float(s), "iter": int(n_it),
-                    "x": x_model.cpu().clone(), "metrics": metrics}
+            best = {"psnr": p, "sigma": float(s), "iter": int(n_it), "lambda": l,
+                    "stepsize": stepsizes[k], "x": x_model.cpu().clone(), "metrics": metrics}
     return best, psnr_map
 
 
@@ -269,9 +349,9 @@ def save_result(result, out_path, cfg):
 
 
 def run_experiment(cfg, name, flux, loss, fidelity_name,
-                   algo=None, lam=None, sigmas=None, iters=None,
+                   algo=None, lam=None, sigmas=None, iters=None, lambdas = None,
                    x=None, meas=None, denoiser=None,
-                   save=True, overwrite=False, verbose=False):
+                   save=True, overwrite=False, verbose=True):
     """
     Grid search for one (data, flux, loss, fidelity, algo) configuration.
 
@@ -297,6 +377,9 @@ def run_experiment(cfg, name, flux, loss, fidelity_name,
 
     sigmas = cfg.sigma_grid if sigmas is None else torch.as_tensor(sigmas)
     iters = cfg.iter_grid if iters is None else torch.as_tensor(iters)
+    if lambdas is None:
+        lambdas = cfg.lam_grid if lam is None else [lam]   # lam singolo = nessuna griglia
+    lambdas = torch.as_tensor(lambdas)
 
     if x is None:
         x = load_data(name, cfg)
@@ -304,22 +387,24 @@ def run_experiment(cfg, name, flux, loss, fidelity_name,
         meas = make_measurements(x, flux, cfg)
     if denoiser is None:
         denoiser = get_denoiser(loss, cfg)
-    prior = wrap_prior(denoiser, algo)
+    prior = denoiser if cfg.prior_name == "weakly_convex" else wrap_prior(denoiser, algo)
 
     y, physics = meas["y"], meas["physics"]
-    data_fidelity, stepsize = get_fidelity(fidelity_name, meas, cfg)
+    data_fidelity, _ = get_fidelity(fidelity_name, meas, cfg, float(lambdas[0]), prior)
+    stepsizes = [get_fidelity(fidelity_name, meas, cfg, float(l), prior)[1] for l in lambdas]
 
     t0 = time.time()
-    best, psnr_map = grid_search(x, y, physics, prior, data_fidelity, stepsize,
-                                 sigmas, iters, algo, lam, desc=tag, verbose=verbose)
+    best, psnr_map = grid_search(x, y, physics, prior, data_fidelity, stepsizes,
+                                 sigmas, iters, lambdas, algo, desc=tag, verbose=verbose)
+
 
     result = {
         "x_rec": best["x"], "sigma": best["sigma"], "iter": best["iter"],
-        "psnr": best["psnr"], "stepsize": stepsize, "flux": flux,
-        "metrics": best["metrics"], "psnr_map": psnr_map,
-        "sigma_grid": sigmas, "iter_grid": iters,
+        "lambda": best["lambda"], "psnr": best["psnr"], "stepsize": best["stepsize"],
+        "flux": flux, "metrics": best["metrics"], "psnr_map": psnr_map,
+        "sigma_grid": sigmas, "iter_grid": iters, "lambda_grid": lambdas,
         "name": name, "loss": loss, "fidelity": fidelity_name,
-        "prior": cfg.prior_name, "algo": algo, "lambda": lam,
+        "prior": cfg.prior_name, "algo": algo,
         "prior_type": "RED" if algo in GRADIENT_ALGOS else "PnP",
         "x_gt": x.cpu(),
     }
@@ -330,6 +415,6 @@ def run_experiment(cfg, name, flux, loss, fidelity_name,
     if best["sigma"] is None:
         log(f"done {tag}: all configurations diverged", cfg)
     else:
-        log(f"done {tag}: sigma={best['sigma']:.4f}, iter={best['iter']}, "
+        log(f"done {tag}: sigma={best['sigma']:.4f}, iter={best['iter']}, lambda = {best['lambda']} "
             f"PSNR={best['psnr']:.2f} dB ({(time.time() - t0) / 60:.1f} min)", cfg)
     return result

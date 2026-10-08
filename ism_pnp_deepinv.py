@@ -10,25 +10,36 @@ import traceback
 import torch
 from tqdm.auto import tqdm
 
+import os
+import sys
+import ISM.analysis.Graph_lib as gr
+
+
+
 from opt_functions.Solver_functions.pnp_utils import (
-    Config, log, make_tag, load_data, make_measurements, get_denoiser, run_experiment,
+    Config, log, make_tag, load_data, make_measurements, get_denoiser, run_experiment
 )
+# from models import utils
+
+import deepinv as dinv
+
 #%%
 # ---------------------------------------------------------------------------
 # Experiment settings
 # ---------------------------------------------------------------------------
 cfg = Config(
-    prior_name="Drunet_finetune",
+    prior_name="weakly_convex",
     save_dir="Results/results_gridsearch",
-    # sigma_grid=torch.logspace(-3, -1, 10),
-    # iter_grid=torch.linspace(10, 100, 10).round().long(),
+    sigma_grid=torch.logspace(-3, -1, 10),
+    iter_grid=torch.linspace(5000, 5000, 1).round().long(),
+    lam_grid = torch.logspace(-3, -1, 10)
 )
 
 data_list     = ["tub_level", "tub_balls"]
 flux_list     = [5, 10, 20, 40, 60]
-loss_list     = ["L2", "L1", "FFL", "L2_FFL", "L1_FFL"]
+loss_list     = ["L2"]
 fidelity_list = ["KL", 'l2']
-algo_list     = ["MD", "PGD"]   # MD -> RED, PGD -> PnP, "PNP_MD" -> PnP mirror descent
+algo_list     = ["Proj_GD"]   # MD -> RED, PGD -> PnP, "PNP_MD" -> PnP mirror descent
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -49,7 +60,7 @@ if __name__ == "__main__":
 
                 for fidelity_name, algo in itertools.product(fidelity_list, algo_list):
                     try:
-                        run_experiment(cfg, name, flux, loss, fidelity_name, algo=algo,
+                        run_experiment(cfg, name, flux, loss, fidelity_name, algo=algo, 
                                        x=x, meas=meas, denoiser=denoiser)
                     except Exception:
                         tag = make_tag(name, flux, loss, fidelity_name,
@@ -70,38 +81,46 @@ if __name__ == "__main__":
 #%%
 # SINGLE EXPERIMENT: choose here
 
-# cfg = Config(prior_name="Drunet_finetune",
-#              save_dir="Results/results_gridsearch")
+cfg = Config(prior_name="weakly_convex",
+             save_dir="Results/results_gridsearch",
+             kl_step_scale=1e-3,
+             l2_step_scale=1e-3)
  
-# # SINGLE EXPERIMENT: choose here
+# SINGLE EXPERIMENT: choose here
  
-# data     = "tub_level"     # 'tub_level', 'tub_balls'
-# flux     = 10
-# loss     = "L2"            # 'L2', 'L1', 'FFL', 'L2_FFL', 'L1_FFL'
-# fidelity = "KL"            # 'KL', 'L2'
+data     = "tub_level"     # 'tub_level', 'tub_balls'
+flux     = 40
+loss     = "L2"            # 'L2', 'L1', 'FFL', 'L2_FFL', 'L1_FFL'
+fidelity = "l2"            # 'KL', 'L2'
  
-# algo     = "MD"            # 'MD'     -> RED prior (gradient step on the prior)
-#                            # 'PGD'    -> PnP prior (denoiser as prox)
-#                            # 'PNP_MD' -> PnP mirror descent (Burg entropy)
-# lam      = 1.0             # regularization weight (mainly matters for RED / MD)
+algo     = "Proj_GD"            # 'MD'     -> RED prior (gradient step on the prior)
+                           # 'PGD'    -> PnP prior (denoiser as prox)
+                           # 'PNP_MD' -> PnP mirror descent (Burg entropy)
+lam      = 0.01             # regularization weight (mainly matters for RED / MD)
  
-# # None = full grids from cfg; one value each = single reconstruction, no search
-# sigmas = None              # e.g. [0.01]
-# iters  = None              # e.g. [50]
+# None = full grids from cfg; one value each = single reconstruction, no search
+sigmas = [0.05]              # e.g. [0.01]
+iters  = [1000]              # e.g. [50]
  
-# res = run_experiment(cfg, data, flux, loss, fidelity,
-#                      algo=algo, lam=lam,
-#                      sigmas=sigmas, iters=iters,
-#                      save=False,        # True: also write .pth + summary.csv
-#                      overwrite=True,
-#                      verbose=True)
+res = run_experiment(cfg, data, flux, loss, fidelity,
+                     algo=algo, lam=lam,
+                     sigmas=sigmas, iters=iters,
+                     save=True,        # True: also write .pth + summary.csv
+                     overwrite=True,
+                     verbose=True)
  
-# if res["sigma"] is not None:
-#     print(f"\n[{res['algo']} / {res['prior_type']}] Best: sigma = {res['sigma']:.4f}, "
-#           f"max_iter = {res['iter']}, PSNR = {res['psnr']:.2f} dB")
-# else:
-#     print(f"\n[{res['algo']} / {res['prior_type']}] All configurations diverged. "
-#           f"Try a smaller lam or cfg.kl_step_scale.")
+if res["sigma"] is not None:
+    print(f"\n[{res['algo']} / {res['prior_type']}] Best: sigma = {res['sigma']:.4f}, "
+          f"max_iter = {res['iter']}, PSNR = {res['psnr']:.2f} dB")
+else:
+    print(f"\n[{res['algo']} / {res['prior_type']}] All configurations diverged. "
+          f"Try a smaller lam or cfg.kl_step_scale.")
+
+dinv.utils.plotting.plot_curves(res["metrics"])
+gr.ShowImg(res["x_rec"], pxsize_x=40*1e-3)
+
 
 
 # %%
+
+
