@@ -1,38 +1,59 @@
 """
-Reusable helpers for the PnP / RED grid-search experiments.
+Grid search for PnP / RED / WCRR reconstructions.
 
-All settings that used to be script globals (device, Nx, pxsizex, save_dir,
-grids, ...) live in a Config object that is passed explicitly to the functions.
+How the prior is used:
+    gradient algorithms ('MD', 'GD')     -> RED prior  (grad = x - D(x))
+    prox algorithms ('PGD', 'HQS', ...)  -> PnP prior  (prox = D(x))
+    explicit priors                      -> R(x) used directly:
+        'weakly_convex' (WCRR)  smooth      -> 'PROJ_GD'
+        'TV_smooth'             smooth      -> 'PROJ_GD'   (smoothing eps = cfg.tv_eps)
+        'L1'                    non-smooth  -> 'PROX_GD'
 
-How the denoiser is used depends on the algorithm:
-  - gradient algorithms ('MD', 'GD')    -> RED prior   (grad = x - D(x))
-  - prox algorithms ('PGD', 'HQS', ...) -> PnP prior   (prox = D(x))
-  - 'PNP_MD'                            -> PnP mirror descent (custom iteration,
-                                           Burg-entropy mirror step on f, then D)
+Grids searched (see searched_axes); a grid that is not searched is fixed:
+    WCRR, backtracking on            : sigma, lambda, iter         (step fixed)
+    WCRR, backtracking 'none'        : sigma, lambda, step, iter
+    TV_smooth / L1, backtracking on  : lambda, iter                (sigma, step fixed)
+    TV_smooth / L1, backtracking none: lambda, step, iter
+    DRUNet / TV, PnP                 : sigma, step, iter           (lambda fixed)
+    DRUNet / TV, RED                 : sigma, step, iter, lambda
+print_search_plan(cfg) shows what a run will do before starting it.
+
+Results (a different grid never overwrites older results):
+    save_dir/summary_all.csv           one row per experiment, all runs
+    save_dir/<run_id>/config.json      grids and settings of this run
+                     /log.txt
+                     /summary.csv
+                     /best_rec_<tag>.pth
+                     /partial_<tag>.pth  checkpoint while a search is running
 """
-import os
 import csv
-import time
+import hashlib
 import itertools
+import json
 import os
-import sys
-_WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-_WCRR_ROOT = os.path.join(_WORKSPACE, "weakly_convex_ridge_regularizer")
-
-if _WCRR_ROOT not in sys.path:
-    sys.path.append(_WCRR_ROOT)
-
-from models import utils
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
+from typing import Optional
 
 import torch
 import deepinv as dinv
-from deepinv.optim.optimizers import optim_builder
-from deepinv.optim.optim_iterators import OptimIterator
-from deepinv.optim.bregman import BurgEntropy
 from tqdm.auto import tqdm
 
-from opt_functions.data_preparation import generate_meas_ism
+from opt_functions.data_preparation import load_data, make_measurements
+from .prior_config import GRADIENT_ALGOS, get_denoiser, make_prior
+from .iterators_config import SnapshotIterator, build_model, get_iteration
+
+try:
+    from microssim import micro_structural_similarity   # pip install microssim
+except ImportError:
+    micro_structural_similarity = None
+
+# Priors with an explicit cost R(x): lambda is searched, backtracking can be used
+EXPLICIT_PRIORS = {"weakly_convex", "TV_smooth", "L1"}
+# Priors that do not use sigma (g_param): the sigma grid is not searched
+PRIORS_WITHOUT_SIGMA = {"TV_smooth", "L1"}
+# Priors whose weights depend on the training loss (one checkpoint per loss)
+PRIORS_USING_LOSS = {"Drunet_finetune"}
 
 
 # ---------------------------------------------------------------------------
@@ -51,283 +72,302 @@ def default_device():
 class Config:
     device: torch.device = field(default_factory=default_device)
 
-    # acquisition / simulation
+    # simulation
     Nx: int = 256
     Nz: int = 1
     pxsizex: float = 40
+    is_3d: bool = False
 
-    # prior
-    prior_name: str = "Drunet_finetune"       # 'TV', 'Drunet', 'Drunet_finetune'
+    # prior: 'TV', 'Drunet', 'Drunet_finetune', 'weakly_convex', 'TV_smooth', 'L1'
+    prior_name: str = "Drunet_finetune"
+    tv_eps: float = 1e-2                       # smoothing of 'TV_smooth' (Lip grad R = 8/eps)
     ckpt_dir: str = "training_drunet_newloss"
 
     # paths
     data_dir: str = "Data/Simul_data"
     save_dir: str = "Results/results_gridsearch"
+    run_name: Optional[str] = None            # readable prefix of the run folder
 
-    # grid search
-    sigma_grid: torch.Tensor = field(default_factory=lambda: torch.logspace(-3, -1, 10))
-    iter_grid: torch.Tensor = field(
-        default_factory=lambda: torch.linspace(10, 100, 10).round().long())
-    lam_grid : torch.Tensor = field(default_factory=lambda: torch.logspace(-3, -1, 10))
+    # grids (only the searched ones are used, and those must be set)
+    sigma_grid: Optional[torch.Tensor] = None  # denoiser / regularizer strength
+    iter_grid: Optional[torch.Tensor] = None   # iteration counts
+    lam_grid: Optional[torch.Tensor] = None    # regularization weight
+    step_grid: Optional[torch.Tensor] = None   # multipliers of the base step
 
     # solver
-    algo: str = "PGD"                         # 'MD' (RED), 'PGD' (PnP), 'PNP_MD', 'HQS', ...
-    lam: float = 1.0                          # regularization weight (matters for RED)
+    algo: str = "PGD"                          # 'PGD', 'PNP_MD', 'PROJ_GD', 'PROX_GD', 'MD', 'GD', ...
+    init_choice: str = "adjoint_y"             # 'adjoint_y', 'random', 'constant'
+    # base step: tau = 1 / (L_f * scale [+ lam * L_R for WCRR])
     kl_step_scale: float = 5e3
-    l2_step_scale: float = 1
+    l2_step_scale: float = 1.0
+
+    # step-size strategy for explicit priors (WCRR, TV_smooth, L1):
+    #   'custom'  adaptive backtracking in ProxGDIteration
+    #   'deepinv' deepinv's built-in backtracking
+    #   'none'    fixed step (step_grid is searched)
+    backtracking: str = "custom"
+    bt_s: float = 1.0       # largest step allowed = 1 / bt_s
+    bt_eta: float = 2.0     # L <- eta * L when the decrease test fails
+    bt_delta: float = 0.9   # each iteration first tries step tau_k / delta
+    bt_max: int = 50        # max backtracking loops per iteration
 
     seed: int = 0
 
     def __post_init__(self):
-        os.makedirs(self.save_dir, exist_ok=True)
+        if self.backtracking not in {"custom", "deepinv", "none"}:
+            raise ValueError(f"Unknown backtracking mode: {self.backtracking}")
+
+    def grid_signature(self):
+        """Everything that changes the results of a grid search."""
+        def vals(g, cast):
+            return None if g is None else [cast(v) for v in torch.as_tensor(g).flatten()]
+
+        def rnd(v):
+            return round(float(v), 6)
+
+        return {
+            "prior_name": self.prior_name, "tv_eps": self.tv_eps,
+            "sigma_grid": vals(self.sigma_grid, rnd), "iter_grid": vals(self.iter_grid, int),
+            "lam_grid": vals(self.lam_grid, rnd), "step_grid": vals(self.step_grid, rnd),
+            "kl_step_scale": self.kl_step_scale, "l2_step_scale": self.l2_step_scale,
+            "init_choice": self.init_choice, "backtracking": self.backtracking,
+            "bt": [self.bt_s, self.bt_eta, self.bt_delta, self.bt_max],
+            "seed": self.seed, "Nx": self.Nx, "Nz": self.Nz, "pxsizex": self.pxsizex,
+        }
 
     @property
-    def log_path(self):
-        return os.path.join(self.save_dir, "log.txt")
+    def run_id(self):
+        sig = json.dumps(self.grid_signature(), sort_keys=True)
+        h = hashlib.sha1(sig.encode()).hexdigest()[:8]
+        return f"{self.run_name}_{h}" if self.run_name else h
 
     @property
-    def csv_path(self):
-        return os.path.join(self.save_dir, "summary.csv")
+    def run_dir(self):
+        return os.path.join(self.save_dir, self.run_id)
 
+    def init_run_dir(self):
+        os.makedirs(self.run_dir, exist_ok=True)
+        path = os.path.join(self.run_dir, "config.json")
+        if not os.path.exists(path):
+            with open(path, "w") as f:
+                json.dump(self.grid_signature(), f, indent=2)
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 
 def log(msg, cfg):
     tqdm.write(msg)
-    with open(cfg.log_path, "a") as f:
+    cfg.init_run_dir()
+    with open(os.path.join(cfg.run_dir, "log.txt"), "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
 
 
-def make_tag(name, flux, loss, fidelity_name, prior_name, algo):
-    return f"Fidelity{fidelity_name}_{name}_flux{flux}_{prior_name}_loss{loss}_{algo}"
-
-
 # ---------------------------------------------------------------------------
-# Denoiser and prior
+# Which grids are searched
 # ---------------------------------------------------------------------------
 
-# Algorithms that take a gradient step on the prior -> need RED
-GRADIENT_ALGOS = {"MD", "GD"}
+GRID_FIELDS = {"sigma": "sigma_grid", "lambda": "lam_grid", "step": "step_grid", "iter": "iter_grid"}
+FIXED_VALUES = {"sigma": 1.0, "lambda": 1.0, "step": 1.0}
 
 
-class PositiveDenoiser(torch.nn.Module):
-    def __init__(self, denoiser):
-        super().__init__()
-        self.denoiser = denoiser
-
-    def forward(self, x, sigma, **kwargs):
-        return self.denoiser(x, sigma, **kwargs).clamp(0, 1)
-    
-
-class ProjGDIteration(OptimIterator):
-    """Projected gradient descent on f + lambda*R, projection onto x >= 0."""
-
-    def forward(self, X, cur_data_fidelity, cur_prior, cur_params, y, physics,
-                *args, **kwargs):
-        x_prev = X["est"][0]
-        lam, tau, sigma = cur_params["lambda"], cur_params["stepsize"], cur_params["g_param"]
-
-        grad = cur_data_fidelity.grad(x_prev, y, physics) + lam * cur_prior.grad(x_prev, sigma)
-        x = (x_prev - tau * grad).clamp_min(0)
-
-        cost = cur_data_fidelity(x, y, physics) + lam * cur_prior(x, sigma)
-        return {"est": (x,), "cost": cost}
-    
-class WCRRPrior(dinv.optim.Prior):
-    def __init__(self, sigma=25.0, device="cpu", n_power_steps=200):
-        super().__init__()
-        self.explicit_prior = True
-        self.model = utils.load_model("WCRR-CNN", str(device))
-
-        # Update the conv layer's Lipschitz bound once, at construction
-        with torch.no_grad():
-            self.model.conv_layer.spectral_norm(mode="power_method", n_steps=n_power_steps)
-            
-                # Move tensors stored as plain attributes (spline grids) to the device
-        self.model.to(device)
-        for m in self.model.modules():
-            for attr, val in list(vars(m).items()):
-                if torch.is_tensor(val) and not isinstance(val, torch.nn.Parameter):
-                    setattr(m, attr, val.to(device))
-
-        self.sigma = torch.tensor([sigma], device=device).view(-1, 1, 1, 1)
-
-    def _sigma_for(self, x, sigma):
-        # match the batch size of x
-        s = self.sigma if sigma is None else torch.as_tensor(sigma, device=x.device, dtype=x.dtype)
-        return s.reshape(-1, 1, 1, 1).expand(x.shape[0], 1, 1, 1)
-
-    def fn(self, x, sigma, *args, **kwargs):
-        # R(x); assumes the model exposes its cost as model.cost(x, sigma)
-        return self.model.cost(x, self._sigma_for(x, sigma))
-
-    def grad(self, x, sigma, *args, **kwargs):
-        return self.model.grad(x, self._sigma_for(x, sigma))
-    
-    def get_mu(self, *args, **kwargs):
-        return self.model.get_mu()
-
-
-def get_denoiser(loss, cfg):
-    """Load the bare denoiser (not yet wrapped as PnP or RED)."""
-    if cfg.prior_name == "TV":
-        return dinv.models.TVDenoiser(n_it_max=20)
-    
-    if cfg.prior_name == 'weakly_convex':
-        return WCRRPrior(sigma=25.0, device=cfg.device)
-    
-    if cfg.prior_name == "Drunet":
-        drunet = dinv.models.DRUNet(in_channels=1, out_channels=1,
-                                    pretrained="download", device=cfg.device)
-        return PositiveDenoiser(drunet)
-    elif cfg.prior_name == "Drunet_finetune":
-        drunet = dinv.models.DRUNet(in_channels=1, out_channels=1,
-                                    pretrained=None, device=cfg.device)
-        ckpt_path = os.path.join(cfg.ckpt_dir, f"best_model_checkpoint_drunet_{loss}.pth")
-        ckpt = torch.load(ckpt_path, map_location=cfg.device)
-        drunet.load_state_dict(ckpt["model_state_dict"])
-        return PositiveDenoiser(drunet)
+def searched_axes(cfg, algo):
+    """({axis: reason} searched, {axis: reason} fixed) for this prior and algorithm."""
+    searched = {"iter": "iteration counts (one run of the largest value)"}
+    fixed = {}
+    if cfg.prior_name in PRIORS_WITHOUT_SIGMA:
+        fixed["sigma"] = f"{cfg.prior_name} does not use sigma"
     else:
-        raise ValueError(f"Unknown prior: {cfg.prior_name}")
+        searched["sigma"] = "denoiser / regularizer strength"
+    if cfg.prior_name in EXPLICIT_PRIORS:
+        searched["lambda"] = "regularization weight"
+        if cfg.backtracking == "none":
+            searched["step"] = "fixed step size (no backtracking)"
+        else:
+            fixed["step"] = "backtracking adapts the step"
+    else:
+        searched["step"] = "multiplier of the base step"
+        if algo.upper() in GRADIENT_ALGOS:
+            searched["lambda"] = "RED regularization weight"
+        else:
+            fixed["lambda"] = "PnP: no lambda"
+    return searched, fixed
 
-    
+
+def resolve_grids(cfg, algo, sigmas=None, iters=None, lambdas=None, steps=None):
+    """The grids used, as 1D tensors (arguments override cfg), plus warnings."""
+    searched, fixed = searched_axes(cfg, algo)
+    given = {"sigma": sigmas, "iter": iters, "lambda": lambdas, "step": steps}
+    grids, notes = {}, []
+    for axis, field_name in GRID_FIELDS.items():
+        g = given[axis] if given[axis] is not None else getattr(cfg, field_name)
+        g = None if g is None else torch.as_tensor(g).flatten()
+        if axis in searched:
+            if g is None or g.numel() == 0:
+                raise ValueError(f"{cfg.prior_name} with {algo.upper()} searches '{axis}' "
+                                 f"({searched[axis]}): set cfg.{field_name}")
+            grids[axis] = g
+        else:
+            if g is not None and g.numel() > 1:
+                notes.append(f"cfg.{field_name} is ignored ({fixed[axis]}), "
+                             f"fixed to {FIXED_VALUES[axis]}")
+            grids[axis] = torch.tensor([FIXED_VALUES[axis]])
+    grids["iter"] = grids["iter"].round().long()
+    for axis in ("sigma", "lambda", "step"):
+        grids[axis] = grids[axis].float()
+    return grids, notes
 
 
-def wrap_prior(denoiser, algo):
-    """RED for gradient-based algorithms, PnP for prox-based ones."""
-    if algo.upper() in GRADIENT_ALGOS:
-        return dinv.optim.RED(denoiser=denoiser)
-    return dinv.optim.PnP(denoiser=denoiser)
+def search_plan(cfg, algo, grids=None, notes=()):
+    """Readable description of what a run will search."""
+    if grids is None:
+        grids, notes = resolve_grids(cfg, algo)
+    searched, fixed = searched_axes(cfg, algo)
+    lines = [f"search plan: prior {cfg.prior_name}, algo {algo.upper()}"]
+    if cfg.prior_name == "TV_smooth":
+        lines.append(f"  tv_eps = {cfg.tv_eps:g}")
+    for axis in ("sigma", "lambda", "step", "iter"):
+        g = grids[axis].tolist()
+        if axis in searched:
+            shown = g if len(g) <= 7 else g[:3] + ["..."] + g[-2:]
+            lines.append(f"  {axis:<6} searched ({len(g)}): {shown}  <- {searched[axis]}")
+        else:
+            lines.append(f"  {axis:<6} fixed = {g[0]:g}  <- {fixed[axis]}")
+    n_runs = len(grids["sigma"]) * len(grids["step"]) * len(grids["lambda"])
+    lines.append(f"  -> {n_runs} runs of {int(grids['iter'].max())} iterations")
+    lines += [f"  WARNING: {n}" for n in notes]
+    return "\n".join(lines)
+
+
+def print_search_plan(cfg, algo=None):
+    print(search_plan(cfg, algo or cfg.algo))
 
 
 # ---------------------------------------------------------------------------
-# Data and fidelity
+# Step sizes and metrics
 # ---------------------------------------------------------------------------
 
-# Must match the order of generate_meas_ism's return statement
-MEAS_KEYS = ("PSF", "y", "avg_y", "sum_y", "finger_print", "physics",
-             "df_kl", "df_l2", "L_kl", "L_l2")
-
-
-def load_data(name, cfg):
-    x = torch.load(os.path.join(cfg.data_dir, f"{name}.pth"), map_location=cfg.device)
-    return x / x.max() + 1e-5
-
-
-def make_measurements(x, flux, cfg):
-    """Same seed -> same noise realization for every loss/fidelity at this (data, flux)."""
-    torch.manual_seed(cfg.seed)
-    out = generate_meas_ism(x, cfg.Nx, cfg.Nz, cfg.pxsizex, flux, cfg.device)
-    if len(out) != len(MEAS_KEYS):
-        raise ValueError(f"generate_meas_ism returned {len(out)} values but MEAS_KEYS "
-                         f"has {len(MEAS_KEYS)}. Update MEAS_KEYS to match its return.")
-    return dict(zip(MEAS_KEYS, out))
-
-
-def get_fidelity(fidelity_name, meas, cfg, lam=1.0, prior=None):
+def fidelity_and_steps(fidelity_name, meas, lam, prior, cfg):
+    """Data fidelity, base step 1/L, and the safe Lipschitz bound of grad(f + lam R)
+    (without the step scale; used as fallback step by the custom backtracking)."""
     name = fidelity_name.upper()
     if name == "KL":
-        datafid = meas["df_kl"]
-        L_f = meas["L_kl"].item() *cfg.kl_step_scale
+        df, L_f, scale = meas["df_kl"], float(meas["L_kl"]), cfg.kl_step_scale
     elif name == "L2":
-        datafid = meas["df_l2"]
-        L_f = meas["L_l2"].item() *cfg.l2_step_scale
+        df, L_f, scale = meas["df_l2"], float(meas["L_l2"]), cfg.l2_step_scale
     else:
         raise ValueError(f"Unknown fidelity: {fidelity_name}")
-
-    L_tot = L_f
-    if cfg.prior_name == "weakly_convex":
-        L_R = float(prior.get_mu())   # Lipschitz constant of grad R
-        L_tot = L_f + lam * L_R
-
-    stepsize = 1 / L_tot
-    return datafid, stepsize
-
-
-# ---------------------------------------------------------------------------
-# Solver
-# ---------------------------------------------------------------------------
-
-class PnPMDIteration(OptimIterator):
-    """PnP mirror descent: Burg-entropy mirror step on f, then the denoiser."""
-
-    def __init__(self, bregman_potential=None, eps=1e-5, **kwargs):
-        super().__init__(**kwargs)
-        self.bregman_potential = bregman_potential or BurgEntropy()
-        self.eps = eps
-
-    def forward(self, X, cur_data_fidelity, cur_prior, cur_params, y, physics,
-                *args, **kwargs):
-        x_prev = X["est"][0].clamp_min(self.eps)          # Burg entropy needs x > 0
-        grad_f = cur_data_fidelity.grad(x_prev, y, physics)
-        z = self.bregman_potential.grad_conj(
-            self.bregman_potential.grad(x_prev) - cur_params["stepsize"] * grad_f)
-        x = cur_prior.prox(z, cur_params["g_param"]).clamp_min(self.eps)
-        return {"est": (x,), "cost": None}
-
-
-def get_iteration(algo):
-    if algo.upper() == "PNP_MD":
-        return PnPMDIteration()
-    if algo.upper() == "PROJ_GD":
-        return ProjGDIteration()
-    return algo.upper()
-
-
-def custom_output(X):
-    return X["est"][0].clamp(0, 1)
-
-
-def init_fn(observation, physics):
-    x0 = physics.A_adjoint(observation)
-    x0 = x0 / x0.max()
-    return {"est": (x0, x0)}
+    L_R = lam * float(prior.get_mu().detach()) if getattr(prior, "explicit_prior", False) else 0.0
+    return df, 1.0 / (L_f * scale + L_R), L_f + L_R
 
 
 psnr_fn = dinv.metric.PSNR()
+ssim_fn = dinv.metric.SSIM()
 
 
-def build_model(prior, data_fidelity, stepsize, sigma, n_iter, algo, lam):
-    return optim_builder(
-        iteration=get_iteration(algo), prior=prior, g_first=False,
-        data_fidelity=data_fidelity,
-        params_algo={"stepsize": stepsize, "g_param": sigma, "sigma": sigma,
-                     "lambda": lam},
-        backtracking=True,
-        early_stop=False, max_iter=n_iter,
-        crit_conv="residual", thres_conv=1e-5,
-        get_output=custom_output, verbose=False, custom_init=init_fn,
-    )
+def psnr(x_rec, x_gt):
+    """PSNR after scaling the reconstruction to max 1 (as used in the grid search)."""
+    return psnr_fn(x_rec / x_rec.max().clamp_min(1e-12), x_gt).item()
 
 
-def grid_search(x, y, physics, prior, data_fidelity, stepsizes,
-                sigmas, iters, lambdas, algo, desc="grid search", verbose=False):
-    psnr_map = torch.full((len(sigmas), len(iters), len(lambdas)), torch.nan)
-    best = {"psnr": -float("inf"), "sigma": None, "iter": None, "lambda": None,
-            "stepsize": None, "x": None, "metrics": None}
-    combos = list(itertools.product(enumerate(sigmas), enumerate(iters), enumerate(lambdas)))
+def compute_final_metrics(x_gt, x_rec):
+    """PSNR / SSIM / MicroSSIM of the best reconstruction."""
+    x_gt, x_rec = x_gt.detach().float().cpu(), x_rec.detach().float().cpu()
+    x_rec = x_rec / x_rec.max().clamp_min(1e-12)
+    out = {"psnr": psnr_fn(x_rec, x_gt).item(), "ssim": ssim_fn(x_rec, x_gt).item(),
+           "microssim": float("nan")}
+    if micro_structural_similarity is not None:
+        try:   # not symmetric: ground truth first
+            out["microssim"] = float(micro_structural_similarity(
+                x_gt.squeeze().numpy(), x_rec.squeeze().numpy()))
+        except Exception as e:
+            tqdm.write(f"MicroSSIM failed: {e}")
+    return out
 
-    for (i, s), (j, n_it), (k, l) in tqdm(combos, desc=desc, leave=False):
-        l = float(l)
-        model = build_model(prior, data_fidelity, stepsizes[k], float(s), int(n_it), algo, l)
-        with torch.no_grad():
-            x_model, metrics = model(y, physics, x_gt=x, compute_metrics=True)
 
-        if not torch.isfinite(x_model).all():
-            if verbose:
-                tqdm.write(f"sigma = {float(s):.4f}, iter = {int(n_it)}, lambda = {l:.4g}: diverged (NaN/inf)")
+# ---------------------------------------------------------------------------
+# Grid search
+# ---------------------------------------------------------------------------
+
+GRID_AXES = ("sigma", "step", "iter", "lambda")     # axes of psnr_map
+
+
+def grid_search(x, y, physics, prior, data_fidelity, base_steps, L_safe, grids, algo, cfg,
+                desc="grid search", verbose=False, partial_path=None):
+    """
+    Search sigma x step x iter x lambda. For lambda index k the step used is
+    base_steps[k] * step. Returns (best, psnr_map). If partial_path is given,
+    progress is saved after every grid point and resumed on restart.
+    """
+    sigmas, steps, lambdas = grids["sigma"], grids["step"], grids["lambda"]
+    iters = [int(n) for n in grids["iter"]]
+    max_it = max(iters)
+    psnr_map = torch.full((len(sigmas), len(steps), len(iters), len(lambdas)), float("nan"))
+    best = {"psnr": -float("inf"), "x": None}
+    done = set()
+    x_cpu = x.detach().float().cpu()
+
+    if partial_path and os.path.exists(partial_path):
+        state = torch.load(partial_path, weights_only=False)
+        if state["psnr_map"].shape == psnr_map.shape:
+            psnr_map, best, done = state["psnr_map"], state["best"], set(map(tuple, state["done"]))
+            tqdm.write(f"resuming {desc}: {len(done)} grid points already done")
+
+    explicit = getattr(prior, "explicit_prior", False)
+    custom_bt = explicit and cfg.backtracking == "custom"
+    deepinv_bt = explicit and cfg.backtracking == "deepinv"
+
+    combos = list(itertools.product(enumerate(sigmas), enumerate(steps), enumerate(lambdas)))
+    for (i, sigma), (t, step), (k, lam) in tqdm(combos, desc=desc, leave=False):
+        if (i, t, k) in done:
             continue
+        sigma, step, lam = float(sigma), float(step), float(lam)
+        tau = base_steps[k] * step
+        bt_kwargs = {}
+        if custom_bt:
+            bt_kwargs = dict(backtracking=True, s=cfg.bt_s, eta=cfg.bt_eta,
+                             delta=cfg.bt_delta, max_bt=cfg.bt_max, L_max=L_safe[k])
 
-        p = psnr_fn(x, x_model / x_model.max()).item()
-        psnr_map[i, j, k] = p
+        def run(iteration, n_iter):
+            model = build_model(prior, data_fidelity, iteration, tau, sigma, lam, n_iter,
+                                cfg.init_choice, deepinv_bt)
+            with torch.no_grad():
+                x_out, metrics = model(y, physics, x_gt=x, compute_metrics=True)
+            return x_out.detach().cpu(), metrics
+
+        # recs[n] = (reconstruction after n iterations, deepinv metrics)
+        iteration = get_iteration(algo, snap_iters=iters, **bt_kwargs)
+        if isinstance(iteration, SnapshotIterator):
+            # one run of max_it iterations; the other counts come from the snapshots
+            x_out, metrics = run(iteration, max_it)
+            snaps = {**iteration.snapshots, max_it: x_out}
+            recs = {n: (snaps.get(n), metrics) for n in iters}
+        else:
+            # deepinv built-in iteration: one run per iteration count
+            recs = {n: run(iteration, n) for n in iters}
+
+        line = []
+        for j, n in enumerate(iters):
+            x_n, metrics = recs[n]
+            if x_n is None or not torch.isfinite(x_n).all():
+                line.append(f"{n}:div")
+                continue
+            p = psnr(x_n, x_cpu)
+            psnr_map[i, t, j, k] = p
+            line.append(f"{n}:{p:.2f}")
+            if p > best["psnr"]:
+                L_hist = getattr(iteration, "L_history", None)
+                best = {"psnr": p, "sigma": sigma, "step_scale": step, "iter": n, "lambda": lam,
+                        "stepsize": tau, "x": x_n.clone(),
+                        "metrics": None if metrics is None else
+                        {key: [v[:n] for v in val] for key, val in metrics.items()},
+                        "L_history": L_hist[:n] if L_hist else None}
+
         if verbose:
-            tqdm.write(f"sigma = {float(s):.4f}, iter = {int(n_it)}, lambda = {l:.4g}  PSNR: {p:.2f} dB")
+            tqdm.write(f"sigma={sigma:.4g}  step x{step:.3g} (tau={tau:.3e})  lambda={lam:.4g}  "
+                       f"PSNR by iter: " + "  ".join(line))
 
-        if p > best["psnr"]:
-            best = {"psnr": p, "sigma": float(s), "iter": int(n_it), "lambda": l,
-                    "stepsize": stepsizes[k], "x": x_model.cpu().clone(), "metrics": metrics}
+        done.add((i, t, k))
+        if partial_path:
+            torch.save({"psnr_map": psnr_map, "best": best, "done": sorted(done)}, partial_path)
+
     return best, psnr_map
 
 
@@ -335,51 +375,55 @@ def grid_search(x, y, physics, prior, data_fidelity, stepsizes,
 # One experiment
 # ---------------------------------------------------------------------------
 
-def save_result(result, out_path, cfg):
-    torch.save(result, out_path)
-    new_file = not os.path.exists(cfg.csv_path)
-    with open(cfg.csv_path, "a", newline="") as f:
-        w = csv.writer(f)
+CSV_FIELDS = ["run_id", "data", "flux", "loss", "fidelity", "prior", "algo", "lambda",
+              "sigma", "step_scale", "stepsize", "iter", "psnr", "ssim", "microssim"]
+
+
+def append_csv(path, result):
+    row = {key: result.get("name" if key == "data" else key) for key in CSV_FIELDS}
+    new_file = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         if new_file:
-            w.writerow(["data", "flux", "loss", "fidelity", "algo", "lambda",
-                        "sigma", "iter", "psnr"])
-        w.writerow([result["name"], result["flux"], result["loss"], result["fidelity"],
-                    result["algo"], result["lambda"], result["sigma"], result["iter"],
-                    result["psnr"]])
+            writer.writeheader()
+        writer.writerow(row)
 
 
-def run_experiment(cfg, name, flux, loss, fidelity_name,
-                   algo=None, lam=None, sigmas=None, iters=None, lambdas = None,
+def run_experiment(cfg, name, flux, loss, fidelity_name, algo=None,
+                   sigmas=None, iters=None, lambdas=None, steps=None,
                    x=None, meas=None, denoiser=None,
                    save=True, overwrite=False, verbose=True):
     """
-    Grid search for one (data, flux, loss, fidelity, algo) configuration.
+    Grid search for one (data, flux, loss, fidelity, algo) and save the best result.
 
-    algo              : 'MD' (RED), 'PGD' (PnP), 'PNP_MD', ... None = cfg.algo.
-    lam               : regularization weight. None = cfg.lam.
-    sigmas / iters    : override the grids in cfg. Give one value each
-                        (e.g. sigmas=[0.01], iters=[50]) for a single reconstruction.
-    x, meas, denoiser : pre-computed objects, to avoid reloading inside loops.
-                        The denoiser is wrapped as RED or PnP depending on algo.
-    save              : write best_rec_<tag>.pth and a row in summary.csv.
-    overwrite         : rerun even if the .pth file already exists.
-
+    algo                        : None = cfg.algo
+    sigmas/iters/lambdas/steps  : override the grids in cfg
+    x, meas, denoiser           : pre-computed objects, to avoid reloading in loops
+    save                        : write best_rec_<tag>.pth, the csv rows and checkpoints
+    overwrite                   : rerun even if best_rec_<tag>.pth already exists
     Returns the result dict, or None if skipped.
     """
-    algo = (cfg.algo if algo is None else algo).upper()
-    lam = cfg.lam if lam is None else lam
-    tag = make_tag(name, flux, loss, fidelity_name, cfg.prior_name, algo)
-    out_path = os.path.join(cfg.save_dir, f"best_rec_{tag}.pth")
+    algo = (algo or cfg.algo).upper()
+    explicit = cfg.prior_name in EXPLICIT_PRIORS
+    loss_tag = loss if cfg.prior_name in PRIORS_USING_LOSS else "none"
 
-    if save and not overwrite and os.path.exists(out_path):
-        log(f"skip {tag}", cfg)
-        return None
+    grids, notes = resolve_grids(cfg, algo, sigmas, iters, lambdas, steps)
+    tag = f"Fidelity{fidelity_name}_{name}_flux{flux}_{cfg.prior_name}_loss{loss_tag}_{algo}"
 
-    sigmas = cfg.sigma_grid if sigmas is None else torch.as_tensor(sigmas)
-    iters = cfg.iter_grid if iters is None else torch.as_tensor(iters)
-    if lambdas is None:
-        lambdas = cfg.lam_grid if lam is None else [lam]   # lam singolo = nessuna griglia
-    lambdas = torch.as_tensor(lambdas)
+    # the grids actually used define the run folder
+    run_cfg = replace(cfg, sigma_grid=grids["sigma"], iter_grid=grids["iter"],
+                      lam_grid=grids["lambda"], step_grid=grids["step"])
+    out_path = os.path.join(run_cfg.run_dir, f"best_rec_{tag}.pth")
+    partial_path = os.path.join(run_cfg.run_dir, f"partial_{tag}.pth")
+    report = (lambda msg: log(msg, run_cfg)) if save else tqdm.write
+
+    if save:
+        run_cfg.init_run_dir()
+        if os.path.exists(out_path) and not overwrite:
+            report(f"skip {tag} (run {run_cfg.run_id})")
+            return None
+        if overwrite and os.path.exists(partial_path):
+            os.remove(partial_path)
 
     if x is None:
         x = load_data(name, cfg)
@@ -387,34 +431,51 @@ def run_experiment(cfg, name, flux, loss, fidelity_name,
         meas = make_measurements(x, flux, cfg)
     if denoiser is None:
         denoiser = get_denoiser(loss, cfg)
-    prior = denoiser if cfg.prior_name == "weakly_convex" else wrap_prior(denoiser, algo)
+    prior = make_prior(denoiser, algo, cfg.is_3d)   # 3D: only plane 0 is regularized
 
-    y, physics = meas["y"], meas["physics"]
-    data_fidelity, _ = get_fidelity(fidelity_name, meas, cfg, float(lambdas[0]), prior)
-    stepsizes = [get_fidelity(fidelity_name, meas, cfg, float(l), prior)[1] for l in lambdas]
+    steps_info = [fidelity_and_steps(fidelity_name, meas, float(l), prior, cfg)
+                  for l in grids["lambda"]]
+    data_fidelity = steps_info[0][0]
+    base_steps = [s[1] for s in steps_info]
+    L_safe = [s[2] for s in steps_info]
 
+    report(f"start {tag} in {run_cfg.run_dir}\n{search_plan(cfg, algo, grids, notes)}")
     t0 = time.time()
-    best, psnr_map = grid_search(x, y, physics, prior, data_fidelity, stepsizes,
-                                 sigmas, iters, lambdas, algo, desc=tag, verbose=verbose)
+    best, psnr_map = grid_search(x, meas["y"], meas["physics"], prior, data_fidelity,
+                                 base_steps, L_safe, grids, algo, cfg, desc=tag,
+                                 verbose=verbose, partial_path=partial_path if save else None)
 
+    nan = float("nan")
+    final = (compute_final_metrics(x, best["x"]) if best["x"] is not None
+             else {"psnr": nan, "ssim": nan, "microssim": nan})
 
     result = {
-        "x_rec": best["x"], "sigma": best["sigma"], "iter": best["iter"],
-        "lambda": best["lambda"], "psnr": best["psnr"], "stepsize": best["stepsize"],
-        "flux": flux, "metrics": best["metrics"], "psnr_map": psnr_map,
-        "sigma_grid": sigmas, "iter_grid": iters, "lambda_grid": lambdas,
-        "name": name, "loss": loss, "fidelity": fidelity_name,
+        "x_rec": best["x"], "x_gt": x.cpu(),
+        "sigma": best.get("sigma"), "iter": best.get("iter"), "lambda": best.get("lambda"),
+        "step_scale": best.get("step_scale"), "stepsize": best.get("stepsize"),
+        "psnr": best["psnr"], "ssim": final["ssim"], "microssim": final["microssim"],
+        "metrics": best.get("metrics"), "L_history": best.get("L_history"),
+        "psnr_map": psnr_map, "grid_axes": GRID_AXES,
+        "sigma_grid": grids["sigma"], "step_grid": grids["step"],
+        "iter_grid": grids["iter"], "lambda_grid": grids["lambda"],
+        "name": name, "flux": flux, "loss": loss_tag, "fidelity": fidelity_name,
         "prior": cfg.prior_name, "algo": algo,
-        "prior_type": "RED" if algo in GRADIENT_ALGOS else "PnP",
-        "x_gt": x.cpu(),
+        "prior_type": "explicit" if explicit else ("RED" if algo in GRADIENT_ALGOS else "PnP"),
+        "run_id": run_cfg.run_id, "config": run_cfg.grid_signature(),
     }
 
     if save:
-        save_result(result, out_path, cfg)
+        torch.save(result, out_path)
+        append_csv(os.path.join(run_cfg.run_dir, "summary.csv"), result)
+        append_csv(os.path.join(cfg.save_dir, "summary_all.csv"), result)
+        if os.path.exists(partial_path):
+            os.remove(partial_path)
 
-    if best["sigma"] is None:
-        log(f"done {tag}: all configurations diverged", cfg)
+    if best["x"] is None:
+        report(f"done {tag}: all configurations diverged")
     else:
-        log(f"done {tag}: sigma={best['sigma']:.4f}, iter={best['iter']}, lambda = {best['lambda']} "
-            f"PSNR={best['psnr']:.2f} dB ({(time.time() - t0) / 60:.1f} min)", cfg)
+        report(f"done {tag}: sigma={best['sigma']:.4g}, step x{best['step_scale']:.3g}, "
+               f"iter={best['iter']}, lambda={best['lambda']:.4g}  PSNR={best['psnr']:.2f} dB  "
+               f"SSIM={final['ssim']:.4f}  MicroSSIM={final['microssim']:.4f}  "
+               f"({(time.time() - t0) / 60:.1f} min)")
     return result
