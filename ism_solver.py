@@ -15,7 +15,7 @@ from opt_functions.Solver_functions import *
 from opt_functions.Data_manager.real_data_load import *
 from opt_functions.Solver_functions.projected_gradient import *
 from opt_functions.Solver_functions.regularizations import *
-from ism_regularisation_learned.opt_functions.Solver_functions.white_opt_pnp import *
+# from ism_regularisation_learned.opt_functions.Solver_functions.white_opt_pnp import *
 from opt_functions.Solver_functions.Kulback_libler import *
 
 from microssim import MicroSSIM, micro_structural_similarity
@@ -73,7 +73,7 @@ dataset = prepare_ism_data(
     show_plots = True
 )
 
-
+#%%
 kl = KL(back=dataset["back_vec"])
 tv=TVLoss()
 l1 = l1Loss()
