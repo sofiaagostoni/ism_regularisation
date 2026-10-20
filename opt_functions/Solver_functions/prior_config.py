@@ -31,11 +31,15 @@ GRADIENT_ALGOS = {"MD", "GD"}
 class WCRRPrior(dinv.optim.Prior):
     """Weakly convex ridge regularizer R(x), with explicit cost and gradient."""
 
-    def __init__(self, device="cpu", n_power_steps=200):
+    def __init__(self, device="cpu", mode = "pretrained", n_power_steps=200):
         super().__init__()
         self.explicit_prior = True
         self.smooth_prior = True
-        self.model = wcrr_utils.load_model("WCRR-CNN", str(device))
+        if mode == "pretrained":
+            self.model = wcrr_utils.load_model("WCRR-CNN", str(device))
+        elif mode == "ISMtrain":
+            self.model = wcrr_utils.load_model("WCRR-CNN_ISM", str(device), base_dir="/data/cil/sofia/ism_regularisation_learned/training_wcrr/trained_models")
+
 
         # Lipschitz bound of the conv layer, computed once
         with torch.no_grad():
@@ -142,7 +146,9 @@ def get_denoiser(loss, cfg):
     if name == "TV":
         return dinv.models.TVDenoiser(n_it_max=20)
     if name == "weakly_convex":
-        return WCRRPrior(device=cfg.device)
+        return WCRRPrior(device=cfg.device, mode='pretrained')
+    if name == "weakly_convex_ISM":
+        return WCRRPrior(device=cfg.device, mode='ISMtrain')
     if name == "TV_smooth":
         return SmoothTVPrior(eps=cfg.tv_eps)
     if name == "L1":
@@ -154,6 +160,14 @@ def get_denoiser(loss, cfg):
         drunet = dinv.models.DRUNet(in_channels=1, out_channels=1,
                                     pretrained=None, device=cfg.device)
         ckpt = torch.load(os.path.join(cfg.ckpt_dir, f"best_model_checkpoint_drunet_{loss}.pth"),
+                          map_location=cfg.device)
+        drunet.load_state_dict(ckpt["model_state_dict"])
+        return PositiveDenoiser(drunet)
+    
+    if name == "Drunet_fromscratch":
+        drunet = dinv.models.DRUNet(in_channels=1, out_channels=1,
+                                    pretrained=None, device=cfg.device)
+        ckpt = torch.load(os.path.join(cfg.ckpt_dir, f"scratch_{loss}/best_model.pth"),
                           map_location=cfg.device)
         drunet.load_state_dict(ckpt["model_state_dict"])
         return PositiveDenoiser(drunet)

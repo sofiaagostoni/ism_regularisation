@@ -41,21 +41,21 @@ PLOT_SETUP = True      # plot ground truth, PSFs and measurements before running
 PSF_CROP = 64          # pixels shown around the PSF center (None = full PSF)
 
 # --- WCRR -------------------------------------------------------------------
-# cfg = Config(
-#     prior_name="weakly_convex",
-#     save_dir="Results/results_gridsearch",
-#     is_3d=True,
-#     Nz=2,
-#     init_choice="adjoint_y",
-#     kl_step_scale=1e-3,
-#     l2_step_scale=1e1,
-#     sigma_grid=torch.logspace(0, 1.7, 5),     # searched
-#     lam_grid=torch.logspace(1, 4, 8),         # searched
-#     iter_grid=torch.tensor([5000]),           # one value: run length
-#     backtracking="custom",                    # step adapted -> not searched
-# )
-# algo_list = ["PROJ_GD"]
-# loss_list = ["L2"]                            # WCRR ignores the loss: keep one entry
+cfg = Config(
+    prior_name="weakly_convex_ISM",
+    save_dir="Results/results_gridsearch",
+    is_3d=False,
+    Nz=1,
+    init_choice="adjoint_y",
+    kl_step_scale=1e-3,
+    l2_step_scale=1e2,
+    sigma_grid=torch.logspace(0, 1.7, 5),     # searched
+    lam_grid=torch.logspace(1, 4, 8),         # searched
+    iter_grid=torch.tensor([5000]),           # one value: run length
+    backtracking="custom",                    # step adapted -> not searched
+)
+algo_list = ["PROJ_GD"]
+loss_list = ["L2", "KL"]                            # WCRR ignores the loss: keep one entry
 
 # --- Smoothed TV ------------------------------------------------------------
 # cfg = Config(prior_name="TV_smooth", tv_eps=1e-2, is_3d=True, Nz=2,
@@ -72,15 +72,16 @@ PSF_CROP = 64          # pixels shown around the PSF center (None = full PSF)
 # loss_list = ["L2"]
 
 # --- DRUNet -----------------------------------------------------------------
-cfg = Config(prior_name="Drunet", save_dir="Results/results_gridsearch",
-             kl_step_scale=1, l2_step_scale=1e1,is_3d=True,Nz=2,
-             sigma_grid=torch.logspace(-3, -1, 20),
-             step_grid=torch.logspace(1, 5, 7),
-             iter_grid=torch.linspace(10, 400, 30).round().long())
-algo_list = ["PGD"]
-loss_list = ["FFL", "L1", "L2"]             # Drunet_finetune: one checkpoint per loss
+# cfg = Config(prior_name="Drunet_fromscratch", save_dir="Results/results_gridsearch",
+#              kl_step_scale=1, l2_step_scale=1,is_3d=False,Nz=1,
+#              sigma_grid=torch.logspace(-3, -1, 20),
+#              step_grid=torch.logspace(1, 5, 7),
+#              iter_grid=torch.linspace(10, 400, 30).round().long())
 
-data_list = ["tub_3D"]
+# algo_list = ["PGD"]
+# loss_list = ["L2"]             # Drunet_finetune: one checkpoint per loss
+
+data_list = ["tub_level"]
 flux_list = [5, 10, 20, 40, 60]
 fidelity_list = ["KL", "L2"]
 
@@ -93,7 +94,6 @@ def load_data(name, cfg):
     """Load cfg.data_dir/<name>.pth and normalize it to [0, 1].
     3D: each plane is normalized separately, then stacked as channels."""
     x = torch.load(os.path.join(cfg.data_dir, f"{name}.pth"), map_location=cfg.device)
-    print(x)
     if cfg.is_3d:
         return torch.cat([x[0] / x[0].max() + 1e-5, x[1] / x[1].max() + 1e-5], dim=1)
     else:
@@ -111,6 +111,7 @@ def plot_setup(x, meas, cfg):
         gr.ShowDataset(y_tensor.cpu(), normalize=False)
         gr.ShowImg(y_tensor.sum(0).unsqueeze(0).cpu(), cfg.pxsizex*1e-3)
     else:
+        PSF = meas["PSF"]
         y_tensor = torch.cat(list(meas['y']), dim=0)    # (25, 1, 256, 256)
         gr.ShowDataset(PSF.cpu(), normalize=False)
         gr.ShowImg(x.unsqueeze(1).to("cpu"), cfg.pxsizex*1e-3)
@@ -173,23 +174,26 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Single experiment: arguments override the cfg grids (one value = no search)
 # ---------------------------------------------------------------------------
-cfg.prior_name = "Drunet"
-res = run_experiment(cfg, "tub_3D", 20, "L2", "KL", algo="PGD",
-                     sigmas=[5.0], lambdas=[100.0], iters=[2000],
+cfg.prior_name = "weakly_convex_ISM"
+res = run_experiment(cfg, "tub_level", 5, "L2", "L2", algo="Proj_GD",
+                     sigmas=[0.01], lambdas=[100.0], iters=[5000],
                      save=False, verbose=True)
 
-# if res["metrics"] is not None:
-#     dinv.utils.plotting.plot_curves(res["metrics"])
-# #%%
-# # reconstruction vs ground truth, one row per plane
-# x_rec = res["x_rec"]
-# gr.ShowImg(x_rec[:, 0].unsqueeze(1).to("cpu"), cfg.pxsizex*1e-3)
-# gr.ShowImg(x_rec[:, 1].unsqueeze(1).to("cpu"), cfg.pxsizex*1e-3)
+if res["metrics"] is not None:
+    dinv.utils.plotting.plot_curves(res["metrics"])
+    
+x_rec = res["x_rec"]
+gr.ShowImg(x_rec.unsqueeze(1).to("cpu"), cfg.pxsizex*1e-3)
+#%%
+# reconstruction vs ground truth, one row per plane
+x_rec = res["x_rec"]
+gr.ShowImg(x_rec[:, 0].unsqueeze(1).to("cpu"), cfg.pxsizex*1e-3)
+gr.ShowImg(x_rec[:, 1].unsqueeze(1).to("cpu"), cfg.pxsizex*1e-3)
 
 # step size chosen by the backtracking
-# if res["L_history"]:
-#     plt.semilogy(1 / torch.tensor(res["L_history"]))
-#     plt.xlabel("iteration")
-#     plt.ylabel("step size tau")
-#     plt.show()
+if res["L_history"]:
+    plt.semilogy(1 / torch.tensor(res["L_history"]))
+    plt.xlabel("iteration")
+    plt.ylabel("step size tau")
+    plt.show()
 # %%

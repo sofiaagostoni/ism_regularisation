@@ -547,7 +547,7 @@ if __name__ == "__main__":
     # split_by_fidelity=False puts KL and L2 runs in the same tables
     df = load(ROOT, split_by_fidelity=False)   # also: exclude_legacy=True, run_ids=[...]
     best = best_per_method(df)
-    DATA = "tub_3D"                            # or "tub_level" for the 2D results
+    DATA = "tub_level"                            # or "tub_level" for the 2D results
     PLANE = 0                                  # 3D: plane shown in the images (None = max proj.)
 
 #%%

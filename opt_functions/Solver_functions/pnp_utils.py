@@ -49,11 +49,11 @@ except ImportError:
     micro_structural_similarity = None
 
 # Priors with an explicit cost R(x): lambda is searched, backtracking can be used
-EXPLICIT_PRIORS = {"weakly_convex", "TV_smooth", "L1"}
+EXPLICIT_PRIORS = {"weakly_convex", "weakly_convex_ISM", "TV_smooth", "L1"}
 # Priors that do not use sigma (g_param): the sigma grid is not searched
 PRIORS_WITHOUT_SIGMA = {"TV_smooth", "L1"}
 # Priors whose weights depend on the training loss (one checkpoint per loss)
-PRIORS_USING_LOSS = {"Drunet_finetune"}
+PRIORS_USING_LOSS = {"Drunet_finetune", 'Drunet_fromscratch'}
 
 
 # ---------------------------------------------------------------------------

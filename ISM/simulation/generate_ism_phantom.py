@@ -3,7 +3,7 @@ import os
 from . import phantom_simulator as ph
 import numpy as np
 import torch
-import CIL_winterschool.simulation.Tubulin_sim as st
+import ISM.simulation.Tubulin_sim as st
 import matplotlib.pyplot as plt
 
 

@@ -29,7 +29,6 @@ def load_data(name, cfg):
     """Load cfg.data_dir/<name>.pth and normalize it to [0, 1].
     3D: each plane is normalized separately, then stacked as channels."""
     x = torch.load(os.path.join(cfg.data_dir, f"{name}.pth"), map_location=cfg.device)
-    print(x.shape)
     if cfg.is_3d:
         return torch.cat([x[0] / x[0].max() + 1e-5, x[1] / x[1].max() + 1e-5], dim=1)
     
