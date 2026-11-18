@@ -163,6 +163,8 @@ venv.bak/
 *.wandb
 *.yaml
 *.txt
+*.mp4
+*.gif
 # mkdocs documentation
 /site
 
